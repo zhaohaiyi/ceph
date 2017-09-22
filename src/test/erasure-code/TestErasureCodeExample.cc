@@ -13,11 +13,10 @@
  *  version 2.1 of the License, or (at your option) any later version.
  * 
  */
+#include <stdlib.h>
 
 #include "include/stringify.h"
-#include "global/global_init.h"
 #include "ErasureCodeExample.h"
-#include "common/ceph_argparse.h"
 #include "global/global_context.h"
 #include "gtest/gtest.h"
 
@@ -202,7 +201,7 @@ TEST(ErasureCodeExample, decode)
   EXPECT_EQ(-ERANGE, example.decode_concat(degraded, &out));
 }
 
-TEST(ErasureCodeExample, create_ruleset)
+TEST(ErasureCodeExample, create_rule)
 {
   CrushWrapper *c = new CrushWrapper;
   c->create();
@@ -230,18 +229,7 @@ TEST(ErasureCodeExample, create_ruleset)
 
   stringstream ss;
   ErasureCodeExample example;
-  EXPECT_EQ(0, example.create_ruleset("myrule", *c, &ss));
-}
-
-int main(int argc, char **argv) {
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
-
-  global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT, CODE_ENVIRONMENT_UTILITY, 0);
-  common_init_finish(g_ceph_context);
-
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
+  EXPECT_EQ(0, example.create_rule("myrule", *c, &ss));
 }
 
 /*

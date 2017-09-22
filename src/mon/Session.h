@@ -17,6 +17,7 @@
 
 #include "include/xlist.h"
 #include "msg/msg_types.h"
+#include "mon/mon_types.h"
 
 #include "auth/AuthServiceHandler.h"
 #include "osd/OSDMap.h"
@@ -39,8 +40,10 @@ struct Subscription {
 
 struct MonSession : public RefCountedObject {
   ConnectionRef con;
+  int con_type = 0;
+  uint64_t con_features = 0;  // zero if AnonConnection
   entity_inst_t inst;
-  utime_t until;
+  utime_t session_timeout;
   utime_t time_established;
   bool closed;
   xlist<MonSession*>::item item;
@@ -50,6 +53,7 @@ struct MonSession : public RefCountedObject {
   uint64_t global_id;
 
   map<string, Subscription*> sub_map;
+  epoch_t osd_epoch;		// the osdmap epoch sent to the mon client
 
   AuthServiceHandler *auth_handler;
   EntityName entity_name;
@@ -58,13 +62,23 @@ struct MonSession : public RefCountedObject {
   uint64_t proxy_tid;
 
   MonSession(const entity_inst_t& i, Connection *c) :
-    con(c), inst(i), closed(false), item(this),
+    RefCountedObject(g_ceph_context),
+    con(c),
+    con_type(c->get_peer_type()),
+    con_features(0),
+    inst(i), closed(false), item(this),
     auid(0),
-    global_id(0), auth_handler(NULL),
+    global_id(0),
+    osd_epoch(0),
+    auth_handler(NULL),
     proxy_con(NULL), proxy_tid(0) {
-    time_established = ceph_clock_now(g_ceph_context);
+    time_established = ceph_clock_now();
+    if (c->get_messenger()) {
+      // only fill in features if this is a non-anonymous connection
+      con_features = c->get_features();
+    }
   }
-  ~MonSession() {
+  ~MonSession() override {
     //generic_dout(0) << "~MonSession " << this << dendl;
     // we should have been removed before we get destructed; see MonSessionMap::remove_session()
     assert(!item.is_on_list());
@@ -74,10 +88,12 @@ struct MonSession : public RefCountedObject {
 
   bool is_capable(string service, int mask) {
     map<string,string> args;
-    return caps.is_capable(g_ceph_context,
-			   entity_name,
-			   service, "", args,
-			   mask & MON_CAP_R, mask & MON_CAP_W, mask & MON_CAP_X);
+    return caps.is_capable(
+      g_ceph_context,
+      CEPH_ENTITY_TYPE_MON,
+      entity_name,
+      service, "", args,
+      mask & MON_CAP_R, mask & MON_CAP_W, mask & MON_CAP_X);
   }
 };
 
@@ -86,6 +102,7 @@ struct MonSessionMap {
   xlist<MonSession*> sessions;
   map<string, xlist<Subscription*>* > subs;
   multimap<int, MonSession*> by_osd;
+  FeatureMap feature_map; // type -> features -> count
 
   MonSessionMap() {}
   ~MonSessionMap() {
@@ -117,15 +134,22 @@ struct MonSessionMap {
 	  break;
 	}
     }
+    if (s->con_features) {
+      feature_map.rm(s->con_type, s->con_features);
+    }
     s->closed = true;
     s->put();
   }
 
   MonSession *new_session(const entity_inst_t& i, Connection *c) {
     MonSession *s = new MonSession(i, c);
+    assert(s);
     sessions.push_back(&s->item);
     if (i.name.is_osd())
       by_osd.insert(pair<int,MonSession*>(i.name.num(), s));
+    if (s->con_features) {
+      feature_map.add(s->con_type, s->con_features);
+    }
     s->get();  // caller gets a ref
     return s;
   }
@@ -182,7 +206,7 @@ struct MonSessionMap {
     } else {
       sub = new Subscription(s, what);
       s->sub_map[what] = sub;
-      
+
       if (!subs.count(what))
 	subs[what] = new xlist<Subscription*>;
       subs[what]->push_back(&sub->type_item);
@@ -199,11 +223,11 @@ struct MonSessionMap {
   }
 };
 
-inline ostream& operator<<(ostream& out, const MonSession *s)
+inline ostream& operator<<(ostream& out, const MonSession& s)
 {
-  out << "MonSession: " << s->inst << " is "
-      << (s->closed ? "closed" : "open");
-  out << s->caps;
+  out << "MonSession(" << s.inst << " is "
+      << (s.closed ? "closed" : "open");
+  out << " " << s.caps << ")";
   return out;
 }
 

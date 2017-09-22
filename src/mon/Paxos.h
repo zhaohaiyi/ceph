@@ -112,20 +112,16 @@ e 12v
 #include "include/types.h"
 #include "mon_types.h"
 #include "include/buffer.h"
-#include "messages/PaxosServiceMessage.h"
 #include "msg/msg_types.h"
-
 #include "include/Context.h"
-
-#include "common/Timer.h"
 #include "common/perf_counters.h"
 #include <errno.h>
 
 #include "MonitorDBStore.h"
+#include "mon/MonOpRequest.h"
 
 class Monitor;
 class MMonPaxos;
-class Paxos;
 
 enum {
   l_paxos_first = 45800,
@@ -234,6 +230,8 @@ public:
     STATE_WRITING_PREVIOUS,
     // leader: refresh following a commit
     STATE_REFRESH,
+    // Shutdown after WRITING or WRITING_PREVIOUS
+    STATE_SHUTDOWN
   };
 
   /**
@@ -261,6 +259,8 @@ public:
       return "writing-previous";
     case STATE_REFRESH:
       return "refresh";
+    case STATE_SHUTDOWN:
+      return "shutdown";
     default:
       return "UNKNOWN";
     }
@@ -274,6 +274,9 @@ private:
   /**
    * @}
    */
+  int commits_started = 0;
+
+  Cond shutdown_cond;
 
 public:
   /**
@@ -281,7 +284,7 @@ public:
    *
    * @return 'true' if we are on the Recovering state; 'false' otherwise.
    */
-  bool is_recovering() const { return (state & STATE_RECOVERING); }
+  bool is_recovering() const { return (state == STATE_RECOVERING); }
   /**
    * Check if we are active.
    *
@@ -309,6 +312,9 @@ public:
 
   /// @return 'true' if we are refreshing an update just committed
   bool is_refresh() const { return state == STATE_REFRESH; }
+
+  /// @return 'true' if we are in the process of shutting down
+  bool is_shutdown() const { return state == STATE_SHUTDOWN; }
 
 private:
   /**
@@ -354,7 +360,7 @@ private:
    *
    * On the Leader, it will be the Proposal Number picked by the Leader 
    * itself. On the Peon, however, it will be the proposal sent by the Leader
-   * and it will only be updated iif its value is higher than the one
+   * and it will only be updated if its value is higher than the one
    * already known by the Peon.
    */
   version_t accepted_pn;
@@ -619,87 +625,38 @@ private:
   bool trimming;
 
   /**
+   * true if we want trigger_propose to *not* propose (yet)
+   */
+  bool plugged = false;
+
+  /**
    * @defgroup Paxos_h_callbacks Callback classes.
    * @{
    */
   /**
    * Callback class responsible for handling a Collect Timeout.
    */
-  class C_CollectTimeout : public Context {
-    Paxos *paxos;
-  public:
-    C_CollectTimeout(Paxos *p) : paxos(p) {}
-    void finish(int r) {
-      if (r == -ECANCELED)
-	return;
-      paxos->collect_timeout();
-    }
-  };
-
+  class C_CollectTimeout;
   /**
    * Callback class responsible for handling an Accept Timeout.
    */
-  class C_AcceptTimeout : public Context {
-    Paxos *paxos;
-  public:
-    C_AcceptTimeout(Paxos *p) : paxos(p) {}
-    void finish(int r) {
-      if (r == -ECANCELED)
-	return;
-      paxos->accept_timeout();
-    }
-  };
-
+  class C_AcceptTimeout;
   /**
    * Callback class responsible for handling a Lease Ack Timeout.
    */
-  class C_LeaseAckTimeout : public Context {
-    Paxos *paxos;
-  public:
-    C_LeaseAckTimeout(Paxos *p) : paxos(p) {}
-    void finish(int r) {
-      if (r == -ECANCELED)
-	return;
-      paxos->lease_ack_timeout();
-    }
-  };
+  class C_LeaseAckTimeout;
 
   /**
    * Callback class responsible for handling a Lease Timeout.
    */
-  class C_LeaseTimeout : public Context {
-    Paxos *paxos;
-  public:
-    C_LeaseTimeout(Paxos *p) : paxos(p) {}
-    void finish(int r) {
-      if (r == -ECANCELED)
-	return;
-      paxos->lease_timeout();
-    }
-  };
+  class C_LeaseTimeout;
 
   /**
    * Callback class responsible for handling a Lease Renew Timeout.
    */
-  class C_LeaseRenew : public Context {
-    Paxos *paxos;
-  public:
-    C_LeaseRenew(Paxos *p) : paxos(p) {}
-    void finish(int r) {
-      if (r == -ECANCELED)
-	return;
-      paxos->lease_renew_timeout();
-    }
-  };
+  class C_LeaseRenew;
 
-  class C_Trimmed : public Context {
-    Paxos *paxos;
-  public:
-    C_Trimmed(Paxos *p) : paxos(p) { }
-    void finish(int r) {
-      paxos->trimming = false;
-    }
-  };
+  class C_Trimmed;
   /**
    *
    */
@@ -715,11 +672,11 @@ public:
     C_Proposal(Context *c, bufferlist& proposal_bl) :
 	proposer_context(c),
 	bl(proposal_bl),
-        proposed(false),
-	proposal_time(ceph_clock_now(NULL))
+	proposed(false),
+	proposal_time(ceph_clock_now())
       { }
 
-    void finish(int r) {
+    void finish(int r) override {
       if (proposer_context) {
 	proposer_context->complete(r);
 	proposer_context = NULL;
@@ -765,7 +722,7 @@ private:
    * Once a Peon receives a collect message from the Leader it will reply
    * with its first and last committed versions, as well as information so
    * the Leader may know if its Proposal Number was, or was not, accepted by
-   * the Peon. The Peon will accept the Leader's Proposal Number iif it is
+   * the Peon. The Peon will accept the Leader's Proposal Number if it is
    * higher than the Peon's currently accepted Proposal Number. The Peon may
    * also inform the Leader of accepted but uncommitted values.
    *
@@ -775,7 +732,7 @@ private:
    *
    * @param collect The collect message sent by the Leader to the Peon.
    */
-  void handle_collect(MMonPaxos *collect);
+  void handle_collect(MonOpRequestRef op);
   /**
    * Handle a response from a Peon to the Leader's collect phase.
    *
@@ -788,7 +745,7 @@ private:
    * knows something we don't and the Leader will have to abort the current
    * proposal in order to retry with the Proposal Number specified by the Peon.
    * It may also occur that the Peon replied with a lower Proposal Number, in
-   * which case we assume it is a reply to an an older value and we'll simply
+   * which case we assume it is a reply to an older value and we'll simply
    * drop it.
    * This function will also check if the Peon replied with an accepted but
    * yet uncommitted value. In this case, if its version is higher than our
@@ -806,7 +763,7 @@ private:
    *
    * @param last The message sent by the Peon to the Leader.
    */
-  void handle_last(MMonPaxos *last);
+  void handle_last(MonOpRequestRef op);
   /**
    * The Recovery Phase timed out, meaning that a significant part of the
    * quorum does not believe we are the Leader, and we thus should trigger new
@@ -841,9 +798,9 @@ private:
    *
    * @pre We are the Leader
    * @pre We are on STATE_ACTIVE
-   * @post We commit, iif we are alone, or we send a message to each quorum 
+   * @post We commit, if we are alone, or we send a message to each quorum 
    *	   member
-   * @post We are on STATE_ACTIVE, iif we are alone, or on 
+   * @post We are on STATE_ACTIVE, if we are alone, or on 
    *	   STATE_UPDATING otherwise
    *
    * @param value The value being proposed to the quorum
@@ -858,8 +815,8 @@ private:
    *
    * @pre We are a Peon
    * @pre We are on STATE_ACTIVE
-   * @post We are on STATE_UPDATING iif we accept the Leader's proposal
-   * @post We send a reply message to the Leader iif we accept its proposal
+   * @post We are on STATE_UPDATING if we accept the Leader's proposal
+   * @post We send a reply message to the Leader if we accept its proposal
    *
    * @invariant The received message is an operation of type OP_BEGIN
    *
@@ -867,7 +824,7 @@ private:
    *		  Paxos::begin function
    *
    */
-  void handle_begin(MMonPaxos *begin);
+  void handle_begin(MonOpRequestRef op);
   /**
    * Handle an Accept message sent by a Peon.
    *
@@ -881,18 +838,18 @@ private:
    *
    * @pre We are the Leader
    * @pre We are on STATE_UPDATING
-   * @post We are on STATE_ACTIVE iif we received accepts from the full quorum
-   * @post We extended the lease iif we moved on to STATE_ACTIVE
-   * @post We are on STATE_UPDATING iif we didn't received accepts from the
+   * @post We are on STATE_ACTIVE if we received accepts from the full quorum
+   * @post We extended the lease if we moved on to STATE_ACTIVE
+   * @post We are on STATE_UPDATING if we didn't received accepts from the
    *	   full quorum
-   * @post We have committed iif we received accepts from a majority
+   * @post We have committed if we received accepts from a majority
    *
    * @invariant The received message is an operation of type OP_ACCEPT
    *
    * @param accept The message sent by the Peons to the Leader during the
    *		   Paxos::handle_begin function
    */
-  void handle_accept(MMonPaxos *accept);
+  void handle_accept(MonOpRequestRef op);
   /**
    * Trigger a fresh election.
    *
@@ -933,6 +890,7 @@ private:
    */
   void commit_start();
   void commit_finish();   ///< finish a commit after txn becomes durable
+  void abort_commit();    ///< Handle commit finish after shutdown started
   /**
    * Commit the new value to stable storage as being the latest available
    * version.
@@ -946,7 +904,7 @@ private:
    * @param commit The message sent by the Leader to the Peon during
    *		   Paxos::commit
    */
-  void handle_commit(MMonPaxos *commit);
+  void handle_commit(MonOpRequestRef op);
   /**
    * Extend the system's lease.
    *
@@ -982,7 +940,7 @@ private:
    * @post A lease timeout callback is set
    * @post Move to STATE_ACTIVE
    * @post Fire up all the callbacks waiting for STATE_ACTIVE
-   * @post Fire up all the callbacks waiting for readable iif we are readable
+   * @post Fire up all the callbacks waiting for readable if we are readable
    * @post Ack the lease to the Leader
    *
    * @invariant The received message is an operation of type OP_LEASE
@@ -990,7 +948,7 @@ private:
    * @param lease The message sent by the Leader to the Peon during the
    *	    Paxos::extend_lease function
    */
-  void handle_lease(MMonPaxos *lease);
+  void handle_lease(MonOpRequestRef op);
   /**
    * Account for all the Lease Acks the Leader receives from the Peons.
    *
@@ -999,7 +957,7 @@ private:
    * fresh elections.
    *
    * @pre We are the Leader
-   * @post Cancel the Lease Ack timeout callback iif we receive acks from all
+   * @post Cancel the Lease Ack timeout callback if we receive acks from all
    *	   the quorum members
    *
    * @invariant The received message is an operation of type OP_LEASE_ACK
@@ -1007,7 +965,7 @@ private:
    * @param ack The message sent by a Peon to the Leader during the
    *		Paxos::handle_lease function
    */
-  void handle_lease_ack(MMonPaxos *ack);
+  void handle_lease_ack(MonOpRequestRef op);
   /**
    * Call fresh elections because at least one Peon didn't acked our lease.
    *
@@ -1111,7 +1069,7 @@ public:
     return paxos_name;
   }
 
-  void dispatch(PaxosServiceMessage *m);
+  void dispatch(MonOpRequestRef op);
 
   void read_and_prepare_transactions(MonitorDBStore::TransactionRef tx,
 				     version_t from, version_t last);
@@ -1187,11 +1145,6 @@ public:
   void _sanity_check_store();
 
   /**
-   * remove legacy paxos versions from before conversion
-   */
-  void remove_legacy_versions();
-
-  /**
    * Helper function to decode a bufferlist into a transaction and append it
    * to another transaction.
    *
@@ -1204,7 +1157,7 @@ public:
    */
   static void decode_append_transaction(MonitorDBStore::TransactionRef t,
 					bufferlist& bl) {
-    MonitorDBStore::TransactionRef vt(new MonitorDBStore::Transaction);
+    auto vt(std::make_shared<MonitorDBStore::Transaction>());
     bufferlist::iterator it = bl.begin();
     vt->decode(it);
     t->append(vt);
@@ -1225,8 +1178,14 @@ public:
    *
    * @param c A callback
    */
-  void wait_for_active(Context *c) {
+  void wait_for_active(MonOpRequestRef op, Context *c) {
+    if (op)
+      op->mark_event("paxos:wait_for_active");
     waiting_for_active.push_back(c);
+  }
+  void wait_for_active(Context *c) {
+    MonOpRequestRef o;
+    wait_for_active(o, c);
   }
 
   /**
@@ -1251,7 +1210,19 @@ public:
 
     return true;
   }
- 
+
+  bool is_plugged() const {
+    return plugged;
+  }
+  void plug() {
+    assert(plugged == false);
+    plugged = true;
+  }
+  void unplug() {
+    assert(plugged == true);
+    plugged = false;
+  }
+
   // read
   /**
    * @defgroup Paxos_h_read_funcs Read-related functions
@@ -1269,6 +1240,14 @@ public:
    * @return the first committed version
    */
   version_t get_first_committed() { return first_committed; }
+  /** 
+   * Get the last commit time
+   *
+   * @returns Our last commit time
+  */
+  utime_t get_last_commit_time() const{
+    return last_commit_time;
+  }
   /**
    * Check if a given version is readable.
    *
@@ -1303,9 +1282,15 @@ public:
    *
    * @param onreadable A callback
    */
-  void wait_for_readable(Context *onreadable) {
+  void wait_for_readable(MonOpRequestRef op, Context *onreadable) {
     assert(!is_readable());
+    if (op)
+      op->mark_event("paxos:wait_for_readable");
     waiting_for_readable.push_back(onreadable);
+  }
+  void wait_for_readable(Context *onreadable) {
+    MonOpRequestRef o;
+    wait_for_readable(o, onreadable);
   }
   /**
    * @}
@@ -1339,9 +1324,15 @@ public:
    *
    * @param c A callback
    */
-  void wait_for_writeable(Context *c) {
+  void wait_for_writeable(MonOpRequestRef op, Context *c) {
     assert(!is_writeable());
+    if (op)
+      op->mark_event("paxos:wait_for_writeable");
     waiting_for_writeable.push_back(c);
+  }
+  void wait_for_writeable(Context *c) {
+    MonOpRequestRef o;
+    wait_for_writeable(o, c);
   }
 
   /**
@@ -1402,9 +1393,9 @@ inline ostream& operator<<(ostream& out, Paxos::C_Proposal& p)
 {
   string proposed = (p.proposed ? "proposed" : "unproposed");
   out << " " << proposed
-      << " queued " << (ceph_clock_now(NULL) - p.proposal_time)
+      << " queued " << (ceph_clock_now() - p.proposal_time)
       << " tx dump:\n";
-  MonitorDBStore::TransactionRef t(new MonitorDBStore::Transaction);
+  auto t(std::make_shared<MonitorDBStore::Transaction>());
   bufferlist::iterator p_it = p.bl.begin();
   t->decode(p_it);
   JSONFormatter f(true);

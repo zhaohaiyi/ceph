@@ -18,8 +18,8 @@
 
 class MMonScrub : public Message
 {
-  static const int HEAD_VERSION = 1;
-  static const int COMPAT_VERSION = 1;
+  static const int HEAD_VERSION = 2;
+  static const int COMPAT_VERSION = 2;
 
 public:
   typedef enum {
@@ -35,43 +35,52 @@ public:
     }
   }
 
-  op_type_t op;
-  version_t version;
+  op_type_t op = OP_SCRUB;
+  version_t version = 0;
   ScrubResult result;
+  int32_t num_keys;
+  pair<string,string> key;
 
   MMonScrub()
-    : Message(MSG_MON_SCRUB, HEAD_VERSION, COMPAT_VERSION)
-  { }
-
-  MMonScrub(op_type_t op, version_t v)
     : Message(MSG_MON_SCRUB, HEAD_VERSION, COMPAT_VERSION),
-      op(op), version(v)
+      num_keys(-1)
   { }
 
-  const char *get_type_name() const { return "mon_scrub"; }
+  MMonScrub(op_type_t op, version_t v, int32_t num_keys)
+    : Message(MSG_MON_SCRUB, HEAD_VERSION, COMPAT_VERSION),
+      op(op), version(v), num_keys(num_keys)
+  { }
 
-  void print(ostream& out) const {
+  const char *get_type_name() const override { return "mon_scrub"; }
+
+  void print(ostream& out) const override {
     out << "mon_scrub(" << get_opname((op_type_t)op);
     out << " v " << version;
     if (op == OP_RESULT)
       out << " " << result;
+    out << " num_keys " << num_keys;
+    out << " key (" << key << ")";
     out << ")";
   }
 
-  void encode_payload(uint64_t features) {
+  void encode_payload(uint64_t features) override {
     uint8_t o = op;
     ::encode(o, payload);
     ::encode(version, payload);
     ::encode(result, payload);
+    ::encode(num_keys, payload);
+    ::encode(key, payload);
   }
 
-  void decode_payload() {
+  void decode_payload() override {
     bufferlist::iterator p = payload.begin();
     uint8_t o;
     ::decode(o, p);
     op = (op_type_t)o;
     ::decode(version, p);
     ::decode(result, p);
+    ::decode(num_keys, p);
+    ::decode(key, p);
   }
 };
 

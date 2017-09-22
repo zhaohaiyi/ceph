@@ -1,28 +1,15 @@
 // -*- mode:C; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
-#include <iostream>
-
-#include <string.h>
-#include <stdlib.h>
 #include <errno.h>
 
-#include "include/types.h"
 #include "include/utime.h"
 #include "objclass/objclass.h"
 
-#include "cls_user_types.h"
 #include "cls_user_ops.h"
 
 CLS_VER(1,0)
 CLS_NAME(user)
-
-cls_handle_t h_class;
-cls_method_handle_t h_user_set_buckets_info;
-cls_method_handle_t h_user_complete_stats_sync;
-cls_method_handle_t h_user_remove_bucket;
-cls_method_handle_t h_user_list_buckets;
-cls_method_handle_t h_user_get_header;
 
 static int write_entry(cls_method_context_t hctx, const string& key, const cls_user_bucket_entry& entry)
 {
@@ -170,7 +157,18 @@ static int cls_user_set_buckets_info(cls_method_context_t hctx, bufferlist *in, 
     CLS_LOG(20, "storing entry for key=%s size=%lld count=%lld",
             key.c_str(), (long long)update_entry.size, (long long)update_entry.count);
 
-    apply_entry_stats(update_entry, &entry);
+    // Update bucket's placement rule info only when linking bucket, not on
+    // usage stats change. */
+    if (op.add) {
+      entry.placement_rule = update_entry.placement_rule;
+    }
+
+    // sync entry stats when not an op.add, as when the case is op.add if its a
+    // new entry we already have copied update_entry earlier, OTOH, for an existing entry
+    // we end up clobbering the existing stats for the bucket
+    if (!op.add){
+      apply_entry_stats(update_entry, &entry);
+    }
     entry.user_stats_sync = true;
 
     ret = write_entry(hctx, key, entry);
@@ -289,7 +287,9 @@ static int cls_user_list_buckets(cls_method_context_t hctx, bufferlist *in, buff
 
   map<string, bufferlist> keys;
 
-  string from_index = op.marker;
+  const string& from_index = op.marker;
+  const string& to_index = op.end_marker;
+  const bool to_index_valid = !to_index.empty();
 
 #define MAX_ENTRIES 1000
   size_t max_entries = op.max_entries;
@@ -297,24 +297,30 @@ static int cls_user_list_buckets(cls_method_context_t hctx, bufferlist *in, buff
     max_entries = MAX_ENTRIES;
 
   string match_prefix;
+  cls_user_list_buckets_ret ret;
 
-  int rc = cls_cxx_map_get_vals(hctx, from_index, match_prefix, max_entries + 1, &keys);
+  int rc = cls_cxx_map_get_vals(hctx, from_index, match_prefix, max_entries, &keys, &ret.truncated);
   if (rc < 0)
     return rc;
 
-  CLS_LOG(20, "from_index=%s match_prefix=%s", from_index.c_str(), match_prefix.c_str());
-  cls_user_list_buckets_ret ret;
+  CLS_LOG(20, "from_index=%s to_index=%s match_prefix=%s",
+          from_index.c_str(),
+          to_index.c_str(),
+          match_prefix.c_str());
 
   list<cls_user_bucket_entry>& entries = ret.entries;
   map<string, bufferlist>::iterator iter = keys.begin();
 
-  bool done = false;
   string marker;
 
-  size_t i;
-  for (i = 0; i < max_entries && iter != keys.end(); ++i, ++iter) {
+  for (; iter != keys.end(); ++iter) {
     const string& index = iter->first;
     marker = index;
+
+    if (to_index_valid && to_index.compare(index) <= 0) {
+      ret.truncated = false;
+      break;
+    }
 
     bufferlist& bl = iter->second;
     bufferlist::iterator biter = bl.begin();
@@ -327,12 +333,9 @@ static int cls_user_list_buckets(cls_method_context_t hctx, bufferlist *in, buff
     }
   }
 
-  if (iter == keys.end())
-    done = true;
-  else
+  if (ret.truncated) {
     ret.marker = marker;
-
-  ret.truncated = !done;
+  }
 
   ::encode(ret, *out);
 
@@ -362,9 +365,16 @@ static int cls_user_get_header(cls_method_context_t hctx, bufferlist *in, buffer
   return 0;
 }
 
-void __cls_init()
+CLS_INIT(user)
 {
   CLS_LOG(1, "Loaded user class!");
+
+  cls_handle_t h_class;
+  cls_method_handle_t h_user_set_buckets_info;
+  cls_method_handle_t h_user_complete_stats_sync;
+  cls_method_handle_t h_user_remove_bucket;
+  cls_method_handle_t h_user_list_buckets;
+  cls_method_handle_t h_user_get_header;
 
   cls_register("user", &h_class);
 
@@ -372,7 +382,7 @@ void __cls_init()
   cls_register_cxx_method(h_class, "set_buckets_info", CLS_METHOD_RD | CLS_METHOD_WR,
                           cls_user_set_buckets_info, &h_user_set_buckets_info);
   cls_register_cxx_method(h_class, "complete_stats_sync", CLS_METHOD_RD | CLS_METHOD_WR,
-                          cls_user_complete_stats_sync, &h_user_set_buckets_info);
+                          cls_user_complete_stats_sync, &h_user_complete_stats_sync);
   cls_register_cxx_method(h_class, "remove_bucket", CLS_METHOD_RD | CLS_METHOD_WR, cls_user_remove_bucket, &h_user_remove_bucket);
   cls_register_cxx_method(h_class, "list_buckets", CLS_METHOD_RD, cls_user_list_buckets, &h_user_list_buckets);
   cls_register_cxx_method(h_class, "get_header", CLS_METHOD_RD, cls_user_get_header, &h_user_get_header);

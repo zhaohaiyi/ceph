@@ -3,7 +3,7 @@
 
 /*
  * This is a simple example RADOS class, designed to be usable as a
- * template from implementing new methods.
+ * template for implementing new methods.
  *
  * Our goal here is to illustrate the interface between the OSD and
  * the class and demonstrate what kinds of things a class can do.
@@ -38,15 +38,6 @@
 
 CLS_VER(1,0)
 CLS_NAME(hello)
-
-cls_handle_t h_class;
-cls_method_handle_t h_say_hello;
-cls_method_handle_t h_record_hello;
-cls_method_handle_t h_replay;
-cls_method_handle_t h_writes_dont_return_data;
-cls_method_handle_t h_turn_it_to_11;
-cls_method_handle_t h_bad_reader;
-cls_method_handle_t h_bad_writer;
 
 /**
  * say hello - a "read" method that does not depend on the object
@@ -258,17 +249,60 @@ static int bad_writer(cls_method_context_t hctx, bufferlist *in, bufferlist *out
 }
 
 
+class PGLSHelloFilter : public PGLSFilter {
+  string val;
+public:
+  int init(bufferlist::iterator& params) override {
+    try {
+      ::decode(xattr, params);
+      ::decode(val, params);
+    } catch (buffer::error &e) {
+      return -EINVAL;
+    }
+    return 0;
+  }
+
+  ~PGLSHelloFilter() override {}
+  bool filter(const hobject_t &obj, bufferlist& xattr_data,
+                      bufferlist& outdata) override
+  {
+    if (val.size() != xattr_data.length())
+      return false;
+
+    if (memcmp(val.c_str(), xattr_data.c_str(), val.size()))
+      return false;
+
+    return true;
+  }
+};
+
+
+PGLSFilter *hello_filter()
+{
+  return new PGLSHelloFilter();
+}
+
+
 /**
  * initialize class
  *
  * We do two things here: we register the new class, and then register
  * all of the class's methods.
  */
-void __cls_init()
+CLS_INIT(hello)
 {
   // this log message, at level 0, will always appear in the ceph-osd
   // log file.
   CLS_LOG(0, "loading cls_hello");
+
+  cls_handle_t h_class;
+  cls_method_handle_t h_say_hello;
+  cls_method_handle_t h_record_hello;
+  cls_method_handle_t h_replay;
+  cls_method_handle_t h_writes_dont_return_data;
+  cls_method_handle_t h_turn_it_to_11;
+  cls_method_handle_t h_bad_reader;
+  cls_method_handle_t h_bad_writer;
 
   cls_register("hello", &h_class);
 
@@ -285,7 +319,7 @@ void __cls_init()
 			  CLS_METHOD_RD,
 			  say_hello, &h_say_hello);
   cls_register_cxx_method(h_class, "record_hello",
-			  CLS_METHOD_WR,
+			  CLS_METHOD_WR | CLS_METHOD_PROMOTE,
 			  record_hello, &h_record_hello);
   cls_register_cxx_method(h_class, "writes_dont_return_data",
 			  CLS_METHOD_WR,
@@ -296,7 +330,7 @@ void __cls_init()
 
   // RD | WR is a read-modify-write method.
   cls_register_cxx_method(h_class, "turn_it_to_11",
-			  CLS_METHOD_RD | CLS_METHOD_WR,
+			  CLS_METHOD_RD | CLS_METHOD_WR | CLS_METHOD_PROMOTE,
 			  turn_it_to_11, &h_turn_it_to_11);
 
   // counter-examples
@@ -304,4 +338,7 @@ void __cls_init()
 			  bad_reader, &h_bad_reader);
   cls_register_cxx_method(h_class, "bad_writer", CLS_METHOD_RD,
 			  bad_writer, &h_bad_writer);
+
+  // A PGLS filter
+  cls_register_cxx_filter(h_class, "hello", hello_filter);
 }

@@ -198,3 +198,66 @@
    fun:_dl_init
    obj:*
 }
+
+# PK11_CreateContextBySymKey
+{
+   <insert_a_suppression_name_here>
+   Helgrind:Race
+   obj:/usr/*lib*/libfreebl*3.so
+   ...
+   obj:/usr/*lib*/libsoftokn3.so
+   ...
+   obj:/usr/*lib*/libnss3.so
+   ...
+   fun:PK11_CreateContextBySymKey
+   ...
+}
+
+# _dl_allocate_tls_init
+{
+   <insert_a_suppression_name_here>
+   Helgrind:Race
+   fun:mempcpy
+   fun:_dl_allocate_tls_init
+   ...
+   fun:pthread_create@*
+   ...
+}
+
+# rados cython constants
+{
+   <insert_a_suppression_name_here>
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:malloc
+   fun:PyObject_Malloc
+   fun:PyCode_New
+   fun:__Pyx_InitCachedConstants
+   fun:initrados
+   fun:_PyImport_LoadDynamicModule
+   ...
+   fun:PyImport_ImportModuleLevel
+   ...
+   fun:PyObject_Call
+   fun:PyEval_CallObjectWithKeywords
+   fun:PyEval_EvalFrameEx
+}
+
+# rbd cython constants
+{
+   <insert_a_suppression_name_here>
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:malloc
+   fun:PyObject_Malloc
+   fun:PyCode_New
+   fun:__Pyx_InitCachedConstants
+   fun:initrbd
+   fun:_PyImport_LoadDynamicModule
+   ...
+   fun:PyImport_ImportModuleLevel
+   ...
+   fun:PyObject_Call
+   fun:PyEval_CallObjectWithKeywords
+   fun:PyEval_EvalFrameEx
+}

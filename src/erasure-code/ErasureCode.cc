@@ -16,13 +16,72 @@
  */
 
 #include <errno.h>
-#include <vector>
 #include <algorithm>
 
-#include "common/strtol.h"
 #include "ErasureCode.h"
 
+#include "common/strtol.h"
+#include "include/buffer.h"
+#include "crush/CrushWrapper.h"
+#include "osd/osd_types.h"
+
+using namespace std;
+
 const unsigned ErasureCode::SIMD_ALIGN = 32;
+
+#define DEFAULT_RULE_ROOT "default"
+#define DEFAULT_RULE_FAILURE_DOMAIN "host"
+
+int ErasureCode::init(
+  ErasureCodeProfile &profile,
+  std::ostream *ss)
+{
+  int err = 0;
+  err |= to_string("crush-root", profile,
+		   &rule_root,
+		   DEFAULT_RULE_ROOT, ss);
+  err |= to_string("crush-failure-domain", profile,
+		   &rule_failure_domain,
+		   DEFAULT_RULE_FAILURE_DOMAIN, ss);
+  err |= to_string("crush-device-class", profile,
+		   &rule_device_class,
+		   "", ss);
+  if (err)
+    return err;
+  _profile = profile;
+  return 0;
+}
+
+int ErasureCode::create_rule(
+  const std::string &name,
+  CrushWrapper &crush,
+  std::ostream *ss) const
+{
+  int ruleid = crush.add_simple_rule(
+    name,
+    rule_root,
+    rule_failure_domain,
+    rule_device_class,
+    "indep",
+    pg_pool_t::TYPE_ERASURE,
+    ss);
+
+  if (ruleid < 0)
+    return ruleid;
+
+  crush.set_rule_mask_max_size(ruleid, get_chunk_count());
+  return ruleid;
+}
+
+int ErasureCode::sanity_check_k(int k, ostream *ss)
+{
+  if (k < 2) {
+    *ss << "k=" << k << " must be >= 2" << std::endl;
+    return -EINVAL;
+  } else {
+    return 0;
+  }
+}
 
 int ErasureCode::chunk_index(unsigned int i) const
 {
@@ -81,12 +140,12 @@ int ErasureCode::encode_prepare(const bufferlist &raw,
 
     raw.copy((k - padded_chunks) * blocksize, remainder, buf.c_str());
     buf.zero(remainder, blocksize - remainder);
-    encoded[chunk_index(k-padded_chunks)].push_back(buf);
+    encoded[chunk_index(k-padded_chunks)].push_back(std::move(buf));
 
     for (unsigned int i = k - padded_chunks + 1; i < k; i++) {
       bufferptr buf(buffer::create_aligned(blocksize, SIMD_ALIGN));
       buf.zero();
-      encoded[chunk_index(i)].push_back(buf);
+      encoded[chunk_index(i)].push_back(std::move(buf));
     }
   }
   for (unsigned int i = k; i < k + m; i++) {

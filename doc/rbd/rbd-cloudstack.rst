@@ -43,15 +43,6 @@ setup for CloudStack Primary Storage.
    you can use package installation instead of having to compile 
    libvirt from source.
 
-.. note:: Make sure the /tmp partition on your hypervisors is at least 25GB.
-   When deploying from a template from the first time /tmp will be used for
-   converting the template from QCOW2 to RAW for storage on RBD. This is no
-   longer valid starting from CloudStack version 4.4.0
-
-.. note:: To use RBD with CloudStack 4.4.0 you require at least librbd version
-   0.67.7 (Ceph Dumpling). Otherwise template deployments and template backups
-   will fail. In case you use Ubuntu we recommend at least LTS version 14.04
-   
 Installing and configuring QEMU for use with CloudStack doesn't require any
 special handling. Ensure that you have a running Ceph Storage Cluster. Install
 QEMU and configure it for use with Ceph; then, install ``libvirt`` version
@@ -59,8 +50,8 @@ QEMU and configure it for use with Ceph; then, install ``libvirt`` version
 with Ceph.
 
 
-.. note:: Raring Ringtail (13.04) will have ``libvirt`` version 0.9.13 or higher
-   with RBD storage pool support enabled by default.
+.. note:: Ubuntu 14.04 and CentOS 7.2 will have ``libvirt`` with RBD storage
+   pool support enabled by default.
 
 .. index:: pools; CloudStack
 
@@ -77,6 +68,11 @@ See `Create a Pool`_ for details on specifying the number of placement groups
 for your pools, and `Placement Groups`_ for details on the number of placement
 groups you should set for your pools.
 
+A newly created pool must initialized prior to use. Use the ``rbd`` tool
+to initialize the pool::
+
+        rbd pool init cloudstack
+
 Create a Ceph User
 ==================
 
@@ -85,7 +81,7 @@ credentials to access the ``cloudstack`` pool we just created. Although we could
 use ``client.admin`` for this, it's recommended to create a user with only
 access to the ``cloudstack`` pool. ::
 
-  ceph auth get-or-create client.cloudstack mon 'allow r' osd 'allow class-read object_prefix rbd_children, allow rwx pool=cloudstack'
+  ceph auth get-or-create client.cloudstack mon 'profile rbd' osd 'profile rbd pool=cloudstack'
 
 Use the information returned by the command in the next step when adding the 
 Primary Storage.
@@ -126,7 +122,6 @@ Limitations
 ===========
 
 - CloudStack will only bind to one monitor (You can however create a Round Robin DNS record over multiple monitors)
-- You may need to compile ``libvirt`` to use version 0.9.13 with Ubuntu.
 
 
 

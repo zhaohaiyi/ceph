@@ -45,12 +45,11 @@ is the primary and the rest are replicas.
 Many PGs can map to one OSD.
 
 A PG represents nothing but a grouping of objects; you configure the
-number of PGs you want (see
-http://ceph.com/wiki/Changing_the_number_of_PGs ), number of
-OSDs * 100 is a good starting point, and all of your stored objects
-are pseudo-randomly evenly distributed to the PGs. So a PG explicitly
-does NOT represent a fixed amount of storage; it represents 1/pg_num
-'th of the storage you happen to have on your OSDs.
+number of PGs you want, number of OSDs * 100 is a good starting point
+, and all of your stored objects are pseudo-randomly evenly distributed
+to the PGs. So a PG explicitly does NOT represent a fixed amount of
+storage; it represents 1/pg_num'th of the storage you happen to have
+on your OSDs.
 
 Ignoring the finer points of CRUSH and custom placement, it goes
 something like this in pseudocode::
@@ -127,12 +126,12 @@ User-visible PG States
 *recovery_wait*
   the PG is waiting for the local/remote recovery reservations
 
-*backfill*
+*backfilling*
   a special case of recovery, in which the entire contents of
   the PG are scanned and synchronized, instead of inferring what
   needs to be transferred from the PG logs of recent operations
 
-*backfill-wait*
+*backfill_wait*
   the PG is waiting in line to start backfill
 
 *backfill_toofull*

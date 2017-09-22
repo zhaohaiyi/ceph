@@ -11,6 +11,8 @@
 #include <boost/thread.hpp>
 #include <errno.h>
 
+#include <atomic>
+
 static int get_concurrency() {
   int concurrency = 0;
   char *env = getenv("LIBRADOS_CONCURRENCY");
@@ -30,8 +32,7 @@ namespace librados {
 
 static void finish_aio_completion(AioCompletionImpl *c, int r) {
   c->lock.Lock();
-  c->ack = true;
-  c->safe = true;
+  c->complete = true;
   c->rval = r;
   c->lock.Unlock();
 
@@ -65,7 +66,7 @@ public:
     }
   }
 
-  virtual void finish(int r) {
+  void finish(int r) override {
     int ret = m_callback();
     if (m_comp != NULL) {
       if (m_finisher != NULL) {
@@ -82,9 +83,10 @@ private:
   AioCompletionImpl *m_comp;
 };
 
-TestRadosClient::TestRadosClient(CephContext *cct)
-  : m_cct(cct->get()),
-    m_watch_notify(m_cct)
+TestRadosClient::TestRadosClient(CephContext *cct,
+                                 TestWatchNotify *watch_notify)
+  : m_cct(cct->get()), m_watch_notify(watch_notify),
+    m_aio_finisher(new Finisher(m_cct))
 {
   get();
 
@@ -96,7 +98,6 @@ TestRadosClient::TestRadosClient(CephContext *cct)
   }
 
   // replicate AIO callback processing
-  m_aio_finisher = new Finisher(m_cct);
   m_aio_finisher->start();
 }
 
@@ -115,11 +116,11 @@ TestRadosClient::~TestRadosClient() {
 }
 
 void TestRadosClient::get() {
-  m_refcount.inc();
+  m_refcount++;
 }
 
 void TestRadosClient::put() {
-  if (m_refcount.dec() == 0) {
+  if (--m_refcount == 0) {
     shutdown();
     delete this;
   }
@@ -127,10 +128,6 @@ void TestRadosClient::put() {
 
 CephContext *TestRadosClient::cct() {
   return m_cct;
-}
-
-uint64_t TestRadosClient::get_instance_id() {
-  return 0;
 }
 
 int TestRadosClient::connect() {
@@ -185,16 +182,16 @@ void TestRadosClient::add_aio_operation(const std::string& oid,
 
 struct WaitForFlush {
   int flushed() {
-    if (count.dec() == 0) {
-      if (c != NULL) {
-	finish_aio_completion(c, 0);
-      }
+    if (--count == 0) {
+      aio_finisher->queue(new FunctionContext(boost::bind(
+        &finish_aio_completion, c, 0)));
       delete this;
     }
     return 0;
   }
 
-  atomic_t count;
+  std::atomic<int64_t> count = { 0 };
+  Finisher *aio_finisher;
   AioCompletionImpl *c;
 };
 
@@ -209,15 +206,28 @@ void TestRadosClient::flush_aio_operations(AioCompletionImpl *c) {
   c->get();
 
   WaitForFlush *wait_for_flush = new WaitForFlush();
-  wait_for_flush->count.set(m_finishers.size());
+  wait_for_flush->count = m_finishers.size();
+  wait_for_flush->aio_finisher = m_aio_finisher;
   wait_for_flush->c = c;
 
   for (size_t i = 0; i < m_finishers.size(); ++i) {
     AioFunctionContext *ctx = new AioFunctionContext(
       boost::bind(&WaitForFlush::flushed, wait_for_flush),
-      m_aio_finisher, NULL);
+      nullptr, nullptr);
     m_finishers[i]->queue(ctx);
   }
+}
+
+int TestRadosClient::aio_watch_flush(AioCompletionImpl *c) {
+  c->get();
+  Context *ctx = new FunctionContext(boost::bind(
+    &TestRadosClient::finish_aio_completion, this, c, _1));
+  get_watch_notify()->aio_flush(this, ctx);
+  return 0;
+}
+
+void TestRadosClient::finish_aio_completion(AioCompletionImpl *c, int r) {
+  librados::finish_aio_completion(c, r);
 }
 
 Finisher *TestRadosClient::get_finisher(const std::string &oid) {

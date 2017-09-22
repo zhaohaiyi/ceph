@@ -14,23 +14,21 @@
 #ifndef XIO_POOL_H
 #define XIO_POOL_H
 
+#include <atomic>
+#include <vector>
+#include <cstdlib>
+#include <cstring>
+#include <cstdint>
+
 extern "C" {
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
 #include "libxio.h"
 }
-#include <iostream>
-#include <vector>
-#include "include/atomic.h"
+
 #include "common/likely.h"
 
-
 static inline int xpool_alloc(struct xio_mempool *pool, uint64_t size,
-			      struct xio_mempool_obj* mp);
-static inline void xpool_free(uint64_t size, struct xio_mempool_obj* mp);
-
-using ceph::atomic_t;
+			      struct xio_reg_mem* mp);
+static inline void xpool_free(uint64_t size, struct xio_reg_mem* mp);
 
 class XioPool
 {
@@ -43,13 +41,13 @@ public:
   static const int MB = 8;
 
   struct xio_piece {
-    struct xio_mempool_obj mp[1];
+    struct xio_reg_mem mp[1];
     struct xio_piece *next;
     int s;
     char payload[MB];
   } *first;
 
-  XioPool(struct xio_mempool *_handle) :
+  explicit XioPool(struct xio_mempool *_handle) :
     handle(_handle), first(0)
     {
     }
@@ -67,7 +65,7 @@ public:
   void *alloc(size_t _s)
     {
 	void *r;
-	struct xio_mempool_obj mp[1];
+	struct xio_reg_mem mp[1];
 	struct xio_piece *x;
 	int e = xpool_alloc(handle, (sizeof(struct xio_piece)-MB) + _s, mp);
 	if (e) {
@@ -96,101 +94,77 @@ private:
     NUM_SLABS,
   };
 
-  atomic_t ctr_set[NUM_SLABS];
-
-  atomic_t msg_cnt;  // send msgs
-  atomic_t hook_cnt; // recv msgs
+  std::atomic<unsigned> ctr_set[NUM_SLABS] = {};
+  std::atomic<unsigned> msg_cnt = { 0 };  // send msgs
+  std::atomic<unsigned> hook_cnt = { 0 }; // recv msgs
 
 public:
-  XioPoolStats() : msg_cnt(0), hook_cnt(0) {
-    for (int ix = 0; ix < NUM_SLABS; ++ix) {
-      ctr_set[ix].set(0);
-    }
-  }
-
-  void dump(const char* tag, uint64_t serial) {
-    std::cout
-      << tag << " #" << serial << ": "
-      << "pool objs: "
-      << "64: " << ctr_set[SLAB_64].read() << " "
-      << "256: " << ctr_set[SLAB_256].read() << " "
-      << "1024: " << ctr_set[SLAB_1024].read() << " "
-      << "page: " << ctr_set[SLAB_PAGE].read() << " "
-      << "max: " << ctr_set[SLAB_MAX].read() << " "
-      << "overflow: " << ctr_set[SLAB_OVERFLOW].read() << " "
-      << std::endl;
-    std::cout
-      << tag << " #" << serial << ": "
-      << " msg objs: "
-      << "in: " << hook_cnt.read() << " "
-      << "out: " << msg_cnt.read() << " "
-      << std::endl;
-  }
+  void dump(const char* tag, uint64_t serial);
 
   void inc(uint64_t size) {
     if (size <= 64) {
-      (ctr_set[SLAB_64]).inc();
+      (ctr_set[SLAB_64])++;
       return;
     }
     if (size <= 256) {
-      (ctr_set[SLAB_256]).inc();
+      (ctr_set[SLAB_256])++;
       return;
     }
     if (size <= 1024) {
-      (ctr_set[SLAB_1024]).inc();
+      (ctr_set[SLAB_1024])++;
       return;
     }
     if (size <= 8192) {
-      (ctr_set[SLAB_PAGE]).inc();
+      (ctr_set[SLAB_PAGE])++;
       return;
     }
-    (ctr_set[SLAB_MAX]).inc();
+    (ctr_set[SLAB_MAX])++;
   }
 
   void dec(uint64_t size) {
     if (size <= 64) {
-      (ctr_set[SLAB_64]).dec();
+      (ctr_set[SLAB_64])--;
       return;
     }
     if (size <= 256) {
-      (ctr_set[SLAB_256]).dec();
+      (ctr_set[SLAB_256])--;
       return;
     }
     if (size <= 1024) {
-      (ctr_set[SLAB_1024]).dec();
+      (ctr_set[SLAB_1024])--;
       return;
     }
     if (size <= 8192) {
-      (ctr_set[SLAB_PAGE]).dec();
+      (ctr_set[SLAB_PAGE])--;
       return;
     }
-    (ctr_set[SLAB_MAX]).dec();
+    (ctr_set[SLAB_MAX])--;
   }
 
-  void inc_overflow() { ctr_set[SLAB_OVERFLOW].inc(); }
-  void dec_overflow() { ctr_set[SLAB_OVERFLOW].dec(); }
+  void inc_overflow() { ctr_set[SLAB_OVERFLOW]++; }
+  void dec_overflow() { ctr_set[SLAB_OVERFLOW]--; }
 
   void inc_msgcnt() {
     if (unlikely(XioPool::trace_msgcnt)) {
-      msg_cnt.inc();
+      msg_cnt++;
     }
   }
 
   void dec_msgcnt() {
     if (unlikely(XioPool::trace_msgcnt)) {
-      msg_cnt.dec();
+      msg_cnt--;
     }
   }
 
   void inc_hookcnt() {
     if (unlikely(XioPool::trace_msgcnt)) {
-      hook_cnt.inc();
+      hook_cnt++;
     }
   }
 
   void dec_hookcnt() {
     if (unlikely(XioPool::trace_msgcnt)) {
-      hook_cnt.dec();
+      hook_cnt--;
     }
   }
 };
@@ -198,13 +172,13 @@ public:
 extern XioPoolStats xp_stats;
 
 static inline int xpool_alloc(struct xio_mempool *pool, uint64_t size,
-			      struct xio_mempool_obj* mp)
+			      struct xio_reg_mem* mp)
 {
   // try to allocate from the xio pool
   int r = xio_mempool_alloc(pool, size, mp);
   if (r == 0) {
     if (unlikely(XioPool::trace_mempool))
-      xp_stats.inc(size);
+      xp_stats += size;
     return 0;
   }
   // fall back to malloc on errors
@@ -216,11 +190,11 @@ static inline int xpool_alloc(struct xio_mempool *pool, uint64_t size,
   return 0;
 }
 
-static inline void xpool_free(uint64_t size, struct xio_mempool_obj* mp)
+static inline void xpool_free(uint64_t size, struct xio_reg_mem* mp)
 {
   if (mp->length) {
     if (unlikely(XioPool::trace_mempool))
-      xp_stats.dec(size);
+      xp_stats -= size;
     xio_mempool_free(mp);
   } else { // from malloc
     if (unlikely(XioPool::trace_mempool))

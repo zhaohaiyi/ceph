@@ -58,11 +58,12 @@ public:
     }
   };
 
+  typedef item* value_type;
   typedef item* const_reference;
 
 private:
   item *_front, *_back;
-  int _size;
+  size_t _size;
 
 public:
   xlist(const xlist& other) {
@@ -78,7 +79,7 @@ public:
     assert(_back == 0);
   }
 
-  int size() const {
+  size_t size() const {
     assert((bool)_front == (bool)_size);
     return _size;
   }

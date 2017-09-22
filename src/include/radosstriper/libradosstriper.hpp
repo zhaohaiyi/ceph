@@ -178,6 +178,15 @@ namespace libradosstriper
      * synchronously get striped object stats (size/mtime)
      */
     int stat(const std::string& soid, uint64_t *psize, time_t *pmtime);
+    int stat2(const std::string& soid, uint64_t *psize, struct timespec *pts);
+
+    /**
+     * asynchronously get striped object stats (size/mtime)
+     */
+    int aio_stat(const std::string& soid, librados::AioCompletion *c,
+                 uint64_t *psize, time_t *pmtime);
+    int aio_stat2(const std::string& soid, librados::AioCompletion *c,
+                  uint64_t *psize, struct timespec *pts);
 
     /**
      * deletes a striped object.
@@ -190,6 +199,14 @@ namespace libradosstriper
      * during deletion (same EBUSY return code)
      */
     int remove(const std::string& soid);
+    int remove(const std::string& soid, int flags);
+
+    /**
+     * asynchronous remove of striped objects
+     * See synchronous version for comments on (lack of) atomicity
+     */
+    int aio_remove(const std::string& soid, librados::AioCompletion *c);
+    int aio_remove(const std::string& soid, librados::AioCompletion *c, int flags);
 
     /**
      * Resizes a striped object

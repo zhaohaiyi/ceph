@@ -15,27 +15,28 @@
 #ifndef CEPH_SIMPLEMESSENGER_H
 #define CEPH_SIMPLEMESSENGER_H
 
-#include "include/types.h"
-#include "include/xlist.h"
-
 #include <list>
 #include <map>
 using namespace std;
+
+#include "include/types.h"
+#include "include/xlist.h"
+
 #include "include/unordered_map.h"
 #include "include/unordered_set.h"
 
 #include "common/Mutex.h"
-#include "include/atomic.h"
-#include "include/Spinlock.h"
 #include "common/Cond.h"
 #include "common/Thread.h"
 #include "common/Throttle.h"
+
+#include "include/spinlock.h"
 
 #include "msg/SimplePolicyMessenger.h"
 #include "msg/Message.h"
 #include "include/assert.h"
 
-#include "DispatchQueue.h"
+#include "msg/DispatchQueue.h"
 #include "Pipe.h"
 #include "Accepter.h"
 
@@ -79,6 +80,7 @@ public:
    * @param name The name to assign ourselves
    * _nonce A unique ID to use for this SimpleMessenger. It should not
    * be a value that will be repeated if the daemon restarts.
+   * features The local features bits for the local_connection
    */
   SimpleMessenger(CephContext *cct, entity_name_t name,
 		  string mname, uint64_t _nonce);
@@ -87,18 +89,19 @@ public:
    * Destroy the SimpleMessenger. Pretty simple since all the work is done
    * elsewhere.
    */
-  virtual ~SimpleMessenger();
+  ~SimpleMessenger() override;
 
   /** @defgroup Accessors
    * @{
    */
-  void set_addr_unknowns(entity_addr_t& addr);
+  void set_addr_unknowns(const entity_addr_t& addr) override;
+  void set_addr(const entity_addr_t &addr) override;
 
-  int get_dispatch_queue_len() {
+  int get_dispatch_queue_len() override {
     return dispatch_queue.get_queue_len();
   }
 
-  double get_dispatch_queue_max_age(utime_t now) {
+  double get_dispatch_queue_max_age(utime_t now) override {
     return dispatch_queue.get_max_age(now);
   }
   /** @} Accessors */
@@ -107,13 +110,14 @@ public:
    * @defgroup Configuration functions
    * @{
    */
-  void set_cluster_protocol(int p) {
+  void set_cluster_protocol(int p) override {
     assert(!started && !did_bind);
     cluster_protocol = p;
   }
 
-  int bind(const entity_addr_t& bind_addr);
-  int rebind(const set<int>& avoid_ports);
+  int bind(const entity_addr_t& bind_addr) override;
+  int rebind(const set<int>& avoid_ports) override;
+  int client_bind(const entity_addr_t& bind_addr) override;
 
   /** @} Configuration functions */
 
@@ -121,9 +125,9 @@ public:
    * @defgroup Startup/Shutdown
    * @{
    */
-  virtual int start();
-  virtual void wait();
-  virtual int shutdown();
+  int start() override;
+  void wait() override;
+  int shutdown() override;
 
   /** @} // Startup/Shutdown */
 
@@ -131,7 +135,7 @@ public:
    * @defgroup Messaging
    * @{
    */
-  virtual int send_message(Message *m, const entity_inst_t& dest) {
+  int send_message(Message *m, const entity_inst_t& dest) override {
     return _send_message(m, dest);
   }
 
@@ -145,13 +149,13 @@ public:
    * @defgroup Connection Management
    * @{
    */
-  virtual ConnectionRef get_connection(const entity_inst_t& dest);
-  virtual ConnectionRef get_loopback_connection();
+  ConnectionRef get_connection(const entity_inst_t& dest) override;
+  ConnectionRef get_loopback_connection() override;
   int send_keepalive(Connection *con);
-  virtual void mark_down(const entity_addr_t& addr);
+  void mark_down(const entity_addr_t& addr) override;
   void mark_down(Connection *con);
   void mark_disposable(Connection *con);
-  virtual void mark_down_all();
+  void mark_down_all() override;
   /** @} // Connection Management */
 protected:
   /**
@@ -161,7 +165,7 @@ protected:
   /**
    * Start up the DispatchQueue thread once we have somebody to dispatch to.
    */
-  virtual void ready();
+  void ready() override;
   /** @} // Messenger Interfaces */
 private:
   /**
@@ -190,8 +194,8 @@ private:
   class ReaperThread : public Thread {
     SimpleMessenger *msgr;
   public:
-    ReaperThread(SimpleMessenger *m) : msgr(m) {}
-    void *entry() {
+    explicit ReaperThread(SimpleMessenger *m) : msgr(m) {}
+    void *entry() override {
       msgr->reaper_entry();
       return 0;
     }
@@ -281,7 +285,7 @@ private:
   /// counter for the global seq our connection protocol uses
   __u32 global_seq;
   /// lock to protect the global_seq
-  ceph_spinlock_t global_seq_lock;
+  ceph::spinlock global_seq_lock;
 
   /**
    * hash map of addresses to Pipes
@@ -304,8 +308,8 @@ private:
   /// internal cluster protocol version, if any, for talking to entities of the same type.
   int cluster_protocol;
 
-  /// Throttle preventing us from building up a big backlog waiting for dispatch
-  Throttle dispatch_throttler;
+  Cond  stop_cond;
+  bool stopped = true;
 
   bool reaper_started, reaper_stop;
   Cond reaper_cond;
@@ -320,7 +324,7 @@ private:
     if (p == rank_pipe.end())
       return NULL;
     // see lock cribbing in Pipe::fault()
-    if (p->second->state_closed.read())
+    if (p->second->state_closed)
       return NULL;
     return p->second;
   }
@@ -354,11 +358,12 @@ public:
    * @return a global sequence ID that nobody else has seen.
    */
   __u32 get_global_seq(__u32 old=0) {
-    ceph_spin_lock(&global_seq_lock);
+    std::lock_guard<decltype(global_seq_lock)> lg(global_seq_lock);
+
     if (old > global_seq)
       global_seq = old;
     __u32 ret = ++global_seq;
-    ceph_spin_unlock(&global_seq_lock);
+
     return ret;
   }
   /**
@@ -369,7 +374,7 @@ public:
   int get_proto_version(int peer_type, bool connect);
 
   /**
-   * Fill in the address and peer type for the local connection, which
+   * Fill in the features, address and peer type for the local connection, which
    * is used for delivering messages back to ourself.
    */
   void init_local_connection();
@@ -380,13 +385,6 @@ public:
    * probably shouldn't be called by anybody else.
    */
   void learned_addr(const entity_addr_t& peer_addr_for_me);
-
-  /**
-   * Release memory accounting back to the dispatch throttler.
-   *
-   * @param msize The amount of memory to release.
-   */
-  void dispatch_throttle_release(uint64_t msize);
 
   /**
    * This function is used by the reaper thread. As long as nobody

@@ -13,16 +13,16 @@
  */
 
 
-#include "MDS.h"
+#include "MDSRank.h"
 
 #include "MDSContext.h"
 
 #include "common/dout.h"
+#define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_mds
 
-
 void MDSInternalContextBase::complete(int r) {
-  MDS *mds = get_mds();
+  MDSRank *mds = get_mds();
 
   dout(10) << "MDSInternalContextBase::complete: " << typeid(*this).name() << dendl;
   assert(mds != NULL);
@@ -31,11 +31,11 @@ void MDSInternalContextBase::complete(int r) {
 }
 
 
-MDS *MDSInternalContext::get_mds() {
+MDSRank *MDSInternalContext::get_mds() {
   return mds;
 }
 
-MDS *MDSInternalContextWrapper::get_mds()
+MDSRank *MDSInternalContextWrapper::get_mds()
 {
   return mds;
 }
@@ -45,13 +45,18 @@ void MDSInternalContextWrapper::finish(int r)
   fin->complete(r);
 }
 
-
 void MDSIOContextBase::complete(int r) {
-  MDS *mds = get_mds();
+  MDSRank *mds = get_mds();
 
   dout(10) << "MDSIOContextBase::complete: " << typeid(*this).name() << dendl;
   assert(mds != NULL);
   Mutex::Locker l(mds->mds_lock);
+  if (mds->is_daemon_stopping()) {
+    dout(4) << "MDSIOContextBase::complete: dropping for stopping "
+            << typeid(*this).name() << dendl;
+    return;
+  }
+
   if (r == -EBLACKLISTED) {
     derr << "MDSIOContextBase: blacklisted!  Restarting..." << dendl;
     mds->respawn();
@@ -60,11 +65,20 @@ void MDSIOContextBase::complete(int r) {
   }
 }
 
-MDS *MDSIOContext::get_mds() {
+void MDSLogContextBase::complete(int r) {
+  MDLog *mdlog = get_mds()->mdlog;
+  uint64_t safe_pos = write_pos;
+  pre_finish(r);
+  // MDSContextBase::complete() free this
+  MDSIOContextBase::complete(r);
+  mdlog->set_safe_pos(safe_pos);
+}
+
+MDSRank *MDSIOContext::get_mds() {
   return mds;
 }
 
-MDS *MDSIOContextWrapper::get_mds() {
+MDSRank *MDSIOContextWrapper::get_mds() {
   return mds;
 }
 
@@ -73,9 +87,19 @@ void MDSIOContextWrapper::finish(int r)
   fin->complete(r);
 }
 
-MDS *MDSInternalContextGather::get_mds()
+void C_IO_Wrapper::complete(int r)
+{
+  if (async) {
+    async = false;
+    get_mds()->finisher->queue(this, r);
+  } else {
+    MDSIOContext::complete(r);
+  }
+}
+
+MDSRank *MDSInternalContextGather::get_mds()
 {
   derr << "Forbidden call to MDSInternalContextGather::get_mds by " << typeid(*this).name() << dendl;
-  assert(0);
+  ceph_abort();
 }
 

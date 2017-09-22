@@ -1,12 +1,6 @@
 // -*- mode:C; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
-#include <iostream>
-
-#include <string.h>
-#include <stdlib.h>
-#include <errno.h>
-
 #include "include/types.h"
 #include "include/utime.h"
 #include "objclass/objclass.h"
@@ -15,15 +9,10 @@
 #include "cls_log_ops.h"
 
 #include "global/global_context.h"
+#include "include/compat.h"
 
 CLS_VER(1,0)
 CLS_NAME(log)
-
-cls_handle_t h_class;
-cls_method_handle_t h_log_add;
-cls_method_handle_t h_log_list;
-cls_method_handle_t h_log_trim;
-cls_method_handle_t h_log_info;
 
 static string log_index_prefix = "1_";
 
@@ -119,16 +108,20 @@ static int cls_log_add(cls_method_context_t hctx, bufferlist *in, bufferlist *ou
     string index;
 
     utime_t timestamp = entry.timestamp;
-    if (timestamp < header.max_time)
+    if (op.monotonic_inc && timestamp < header.max_time)
       timestamp = header.max_time;
     else if (timestamp > header.max_time)
       header.max_time = timestamp;
 
-    get_index(hctx, timestamp, index);
+    if (entry.id.empty()) {
+      get_index(hctx, timestamp, index);
+      entry.id = index;
+    } else {
+      index = entry.id;
+    }
 
-    CLS_LOG(0, "storing entry at %s", index.c_str());
+    CLS_LOG(20, "storing entry at %s", index.c_str());
 
-    entry.id = index;
 
     if (index > header.max_marker)
       header.max_marker = index;
@@ -177,24 +170,22 @@ static int cls_log_list(cls_method_context_t hctx, bufferlist *in, bufferlist *o
   if (!max_entries || max_entries > MAX_ENTRIES)
     max_entries = MAX_ENTRIES;
 
-  int rc = cls_cxx_map_get_vals(hctx, from_index, log_index_prefix, max_entries + 1, &keys);
+  cls_log_list_ret ret;
+
+  int rc = cls_cxx_map_get_vals(hctx, from_index, log_index_prefix, max_entries, &keys, &ret.truncated);
   if (rc < 0)
     return rc;
-
-  cls_log_list_ret ret;
 
   list<cls_log_entry>& entries = ret.entries;
   map<string, bufferlist>::iterator iter = keys.begin();
 
-  bool done = false;
   string marker;
 
-  size_t i;
-  for (i = 0; i < max_entries && iter != keys.end(); ++i, ++iter) {
+  for (; iter != keys.end(); ++iter) {
     const string& index = iter->first;
     marker = index;
     if (use_time_boundary && index.compare(0, to_index.size(), to_index) >= 0) {
-      done = true;
+      ret.truncated = false;
       break;
     }
 
@@ -209,11 +200,7 @@ static int cls_log_list(cls_method_context_t hctx, bufferlist *in, bufferlist *o
     }
   }
 
-  if (iter == keys.end())
-    done = true;
-
   ret.marker = marker;
-  ret.truncated = !done;
 
   ::encode(ret, *out);
 
@@ -251,16 +238,16 @@ static int cls_log_trim(cls_method_context_t hctx, bufferlist *in, bufferlist *o
 
 #define MAX_TRIM_ENTRIES 1000
   size_t max_entries = MAX_TRIM_ENTRIES;
+  bool more;
 
-  int rc = cls_cxx_map_get_vals(hctx, from_index, log_index_prefix, max_entries, &keys);
+  int rc = cls_cxx_map_get_vals(hctx, from_index, log_index_prefix, max_entries, &keys, &more);
   if (rc < 0)
     return rc;
 
   map<string, bufferlist>::iterator iter = keys.begin();
 
-  size_t i;
   bool removed = false;
-  for (i = 0; i < max_entries && iter != keys.end(); ++i, ++iter) {
+  for (; iter != keys.end(); ++iter) {
     const string& index = iter->first;
 
     CLS_LOG(20, "index=%s to_index=%s", index.c_str(), to_index.c_str());
@@ -307,9 +294,15 @@ static int cls_log_info(cls_method_context_t hctx, bufferlist *in, bufferlist *o
   return 0;
 }
 
-void __cls_init()
+CLS_INIT(log)
 {
   CLS_LOG(1, "Loaded log class!");
+
+  cls_handle_t h_class;
+  cls_method_handle_t h_log_add;
+  cls_method_handle_t h_log_list;
+  cls_method_handle_t h_log_trim;
+  cls_method_handle_t h_log_info;
 
   cls_register("log", &h_class);
 

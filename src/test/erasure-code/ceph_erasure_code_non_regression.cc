@@ -3,7 +3,7 @@
 /*
  * Ceph distributed storage system
  *
- * Red Hat (C) 2014 Red Hat <contact@redhat.com>
+ * Red Hat (C) 2014, 2015 Red Hat <contact@redhat.com>
  *
  * Author: Loic Dachary <loic@dachary.org>
  *
@@ -15,6 +15,7 @@
  */
 
 #include <errno.h>
+#include <stdlib.h>
 #include <boost/scoped_ptr.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/program_options/option.hpp>
@@ -42,6 +43,7 @@ class ErasureCodeNonRegression {
   string base;
   string directory;
   ErasureCodeProfile profile;
+  boost::intrusive_ptr<CephContext> cct;
 public:
   int setup(int argc, char** argv);
   int run();
@@ -89,12 +91,14 @@ int ErasureCodeNonRegression::setup(int argc, char** argv) {
     ceph_options.push_back(i->c_str());
   }
 
-  global_init(
-    &def_args, ceph_options, CEPH_ENTITY_TYPE_CLIENT,
-    CODE_ENVIRONMENT_UTILITY,
-    CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
+  cct = global_init(&def_args, ceph_options, CEPH_ENTITY_TYPE_CLIENT,
+		    CODE_ENVIRONMENT_UTILITY,
+		    CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
   common_init_finish(g_ceph_context);
   g_ceph_context->_conf->apply_changes(NULL);
+  const char* env = getenv("CEPH_LIB");
+  std::string libs_dir(env ? env : ".libs");
+  g_conf->set_val_or_die("erasure_code_dir", libs_dir, false);
 
   if (vm.count("help")) {
     cout << desc << std::endl;
@@ -108,13 +112,13 @@ int ErasureCodeNonRegression::setup(int argc, char** argv) {
   create = vm.count("create") > 0;
 
   if (!check && !create) {
-    cerr << "must specifify either --check or --create" << endl;
+    cerr << "must specifify either --check, or --create" << endl;
     return 1;
   }
 
   {
     stringstream path;
-    path << base << "/" << "plugin=" << plugin << " stipe-width=" << stripe_width;
+    path << base << "/" << "plugin=" << plugin << " stripe-width=" << stripe_width;
     directory = path.str();
   }
 
@@ -130,12 +134,9 @@ int ErasureCodeNonRegression::setup(int argc, char** argv) {
       } else {
 	profile[strs[0]] = strs[1];
       }
-      if (strs[0] != "directory")
-	directory += " " + *i;
+      directory += " " + *i;
     }
   }
-  if (profile.count("directory") == 0)
-    profile["directory"] = ".libs";
 
   return 0;
 }
@@ -155,7 +156,9 @@ int ErasureCodeNonRegression::run_create()
   ErasureCodePluginRegistry &instance = ErasureCodePluginRegistry::instance();
   ErasureCodeInterfaceRef erasure_code;
   stringstream messages;
-  int code = instance.factory(plugin, profile, &erasure_code, &messages);
+  int code = instance.factory(plugin,
+			      g_conf->get_val<std::string>("erasure_code_dir"),
+			      profile, &erasure_code, &messages);
   if (code) {
     cerr << messages.str() << endl;
     return code;
@@ -225,7 +228,9 @@ int ErasureCodeNonRegression::run_check()
   ErasureCodePluginRegistry &instance = ErasureCodePluginRegistry::instance();
   ErasureCodeInterfaceRef erasure_code;
   stringstream messages;
-  int code = instance.factory(plugin, profile, &erasure_code, &messages);
+  int code = instance.factory(plugin,
+			      g_conf->get_val<std::string>("erasure_code_dir"),
+			      profile, &erasure_code, &messages);
   if (code) {
     cerr << messages.str() << endl;
     return code;
@@ -312,7 +317,6 @@ int main(int argc, char** argv) {
  *   libtool --mode=execute valgrind --tool=memcheck --leak-check=full \
  *      ./ceph_erasure_code_non_regression \
  *      --plugin jerasure \
- *      --parameter directory=.libs \
  *      --parameter technique=reed_sol_van \
  *      --parameter k=2 \
  *      --parameter m=2 \

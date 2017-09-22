@@ -1,15 +1,15 @@
 #include <errno.h>
 
-#include "include/types.h"
 #include "cls/log/cls_log_ops.h"
 #include "include/rados/librados.hpp"
+#include "include/compat.h"
 
 
 using namespace librados;
 
 
 
-void cls_log_add(librados::ObjectWriteOperation& op, list<cls_log_entry>& entries)
+void cls_log_add(librados::ObjectWriteOperation& op, list<cls_log_entry>& entries, bool monotonic_inc)
 {
   bufferlist in;
   cls_log_add_op call;
@@ -87,18 +87,18 @@ class LogListCtx : public ObjectOperationCompletion {
 public:
   LogListCtx(list<cls_log_entry> *_entries, string *_marker, bool *_truncated) :
                                       entries(_entries), marker(_marker), truncated(_truncated) {}
-  void handle_completion(int r, bufferlist& outbl) {
+  void handle_completion(int r, bufferlist& outbl) override {
     if (r >= 0) {
       cls_log_list_ret ret;
       try {
         bufferlist::iterator iter = outbl.begin();
         ::decode(ret, iter);
         if (entries)
-	  *entries = ret.entries;
+          *entries = std::move(ret.entries);
         if (truncated)
           *truncated = ret.truncated;
         if (marker)
-          *marker = ret.marker;
+          *marker = std::move(ret.marker);
       } catch (buffer::error& err) {
         // nothing we can do about it atm
       }
@@ -126,8 +126,8 @@ void cls_log_list(librados::ObjectReadOperation& op, utime_t& from, utime_t& to,
 class LogInfoCtx : public ObjectOperationCompletion {
   cls_log_header *header;
 public:
-  LogInfoCtx(cls_log_header *_header) : header(_header) {}
-  void handle_completion(int r, bufferlist& outbl) {
+  explicit LogInfoCtx(cls_log_header *_header) : header(_header) {}
+  void handle_completion(int r, bufferlist& outbl) override {
     if (r >= 0) {
       cls_log_info_ret ret;
       try {

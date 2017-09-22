@@ -21,6 +21,7 @@ static const __u8 MON_CAP_ANY   = 0xff;          // *
 struct mon_rwxa_t {
   __u8 val;
 
+  // cppcheck-suppress noExplicitConstructor
   mon_rwxa_t(__u8 v = 0) : val(v) {}
   mon_rwxa_t& operator=(__u8 v) {
     val = v;
@@ -31,14 +32,23 @@ struct mon_rwxa_t {
   }
 };
 
-ostream& operator<<(ostream& out, mon_rwxa_t p);
+ostream& operator<<(ostream& out, const mon_rwxa_t& p);
 
 struct StringConstraint {
+  enum MatchType {
+    MATCH_TYPE_NONE,
+    MATCH_TYPE_EQUAL,
+    MATCH_TYPE_PREFIX,
+    MATCH_TYPE_REGEX
+  };
+
+  MatchType match_type = MATCH_TYPE_NONE;
   string value;
-  string prefix;
 
   StringConstraint() {}
-  StringConstraint(string a, string b) : value(a), prefix(b) {}
+  StringConstraint(MatchType match_type, string value)
+    : match_type(match_type), value(value) {
+  }
 };
 
 ostream& operator<<(ostream& out, const StringConstraint& c);
@@ -76,13 +86,17 @@ struct MonCapGrant {
   // needed by expand_profile() (via is_match()) and cached here.
   mutable list<MonCapGrant> profile_grants;
 
-  void expand_profile(EntityName name) const;
+  void expand_profile(int daemon_type, const EntityName& name) const;
+  void expand_profile_mon(const EntityName& name) const;
+  void expand_profile_mgr(const EntityName& name) const;
 
   MonCapGrant() : allow(0) {}
+  // cppcheck-suppress noExplicitConstructor
   MonCapGrant(mon_rwxa_t a) : allow(a) {}
-  MonCapGrant(string s, mon_rwxa_t a) : service(s), allow(a) {}
-  MonCapGrant(string c) : command(c) {}
-  MonCapGrant(string c, string a, StringConstraint co) : command(c) {
+  MonCapGrant(string s, mon_rwxa_t a) : service(std::move(s)), allow(a) {}
+  // cppcheck-suppress noExplicitConstructor  
+  MonCapGrant(string c) : command(std::move(c)) {}
+  MonCapGrant(string c, string a, StringConstraint co) : command(std::move(c)) {
     command_args[a] = co;
   }
 
@@ -97,6 +111,7 @@ struct MonCapGrant {
    * @return bits we allow
    */
   mon_rwxa_t get_allowed(CephContext *cct,
+			 int daemon_type, ///< CEPH_ENTITY_TYPE_*
 			 EntityName name,
 			 const std::string& service,
 			 const std::string& command,
@@ -118,7 +133,7 @@ struct MonCap {
   std::vector<MonCapGrant> grants;
 
   MonCap() {}
-  MonCap(std::vector<MonCapGrant> g) : grants(g) {}
+  explicit MonCap(std::vector<MonCapGrant> g) : grants(g) {}
 
   string get_str() const {
     return text;
@@ -134,6 +149,7 @@ struct MonCap {
    * This method actually checks a description of a particular operation against
    * what the capability has specified.
    *
+   * @param daemon_type CEPH_ENTITY_TYPE_* for the service (MON or MGR)
    * @param service service name
    * @param command command id
    * @param command_args
@@ -143,6 +159,7 @@ struct MonCap {
    * @return true if the operation is allowed, false otherwise
    */
   bool is_capable(CephContext *cct,
+		  int daemon_type,
 		  EntityName name,
 		  const string& service,
 		  const string& command, const map<string,string>& command_args,

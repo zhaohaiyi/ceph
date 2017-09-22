@@ -19,7 +19,7 @@
 #include "MDSContext.h"
 #include "msg/Messenger.h"
 
-#include "MDS.h"
+#include "MDSRank.h"
 #include "MDLog.h"
 #include "LogSegment.h"
 
@@ -30,17 +30,19 @@
 
 #include "common/config.h"
 
+#define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_mds
 #undef dout_prefix
 #define dout_prefix *_dout << "mds." << mds->get_nodeid() << ".tableclient(" << get_mdstable_name(table) << ") "
 
 
-class C_LoggedAck : public MDSInternalContext {
+class C_LoggedAck : public MDSLogContextBase {
   MDSTableClient *tc;
   version_t tid;
+  MDSRank *get_mds() override { return tc->mds; }
 public:
-  C_LoggedAck(MDSTableClient *a, version_t t) : MDSInternalContext(a->mds), tc(a), tid(t) {}
-  void finish(int r) {
+  C_LoggedAck(MDSTableClient *a, version_t t) : tc(a), tid(t) {}
+  void finish(int r) override {
     tc->_logged_ack(tid);
   }
 };
@@ -91,7 +93,7 @@ void MDSTableClient::handle_request(class MMDSTableRequest *m)
 	       << ", sending ROLLBACK" << dendl;
       assert(!server_ready);
       MMDSTableRequest *req = new MMDSTableRequest(table, TABLESERVER_OP_ROLLBACK, 0, tid);
-      mds->send_message_mds(req, mds->mdsmap->get_tableserver());
+      mds->send_message_mds(req, mds->get_mds_map()->get_tableserver());
     }
     break;
 
@@ -127,7 +129,7 @@ void MDSTableClient::handle_request(class MMDSTableRequest *m)
     break;
 
   default:
-    assert(0);
+    assert(0 == "unrecognized mds_table_client request op");
   }
 
   m->put();
@@ -169,7 +171,7 @@ void MDSTableClient::_prepare(bufferlist& mutation, version_t *ptid, bufferlist 
     // send message
     MMDSTableRequest *req = new MMDSTableRequest(table, TABLESERVER_OP_PREPARE, reqid);
     req->bl = mutation;
-    mds->send_message_mds(req, mds->mdsmap->get_tableserver());
+    mds->send_message_mds(req, mds->get_mds_map()->get_tableserver());
   } else
     dout(10) << "tableserver is not ready yet, deferring request" << dendl;
 }
@@ -190,7 +192,7 @@ void MDSTableClient::commit(version_t tid, LogSegment *ls)
   if (server_ready) {
     // send message
     MMDSTableRequest *req = new MMDSTableRequest(table, TABLESERVER_OP_COMMIT, 0, tid);
-    mds->send_message_mds(req, mds->mdsmap->get_tableserver());
+    mds->send_message_mds(req, mds->get_mds_map()->get_tableserver());
   } else
     dout(10) << "tableserver is not ready yet, deferring request" << dendl;
 }
@@ -222,7 +224,7 @@ void MDSTableClient::resend_commits()
        ++p) {
     dout(10) << "resending commit on " << p->first << dendl;
     MMDSTableRequest *req = new MMDSTableRequest(table, TABLESERVER_OP_COMMIT, 0, p->first);
-    mds->send_message_mds(req, mds->mdsmap->get_tableserver());
+    mds->send_message_mds(req, mds->get_mds_map()->get_tableserver());
   }
 }
 
@@ -239,13 +241,13 @@ void MDSTableClient::resend_prepares()
     dout(10) << "resending prepare on " << p->first << dendl;
     MMDSTableRequest *req = new MMDSTableRequest(table, TABLESERVER_OP_PREPARE, p->first);
     req->bl = p->second.mutation;
-    mds->send_message_mds(req, mds->mdsmap->get_tableserver());
+    mds->send_message_mds(req, mds->get_mds_map()->get_tableserver());
   }
 }
 
 void MDSTableClient::handle_mds_failure(mds_rank_t who)
 {
-  if (who != mds->mdsmap->get_tableserver())
+  if (who != mds->get_mds_map()->get_tableserver())
     return; // do nothing.
 
   dout(7) << "tableserver mds." << who << " fails" << dendl;

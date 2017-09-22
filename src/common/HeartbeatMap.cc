@@ -12,17 +12,13 @@
  * 
  */
 
-#include <time.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <errno.h>
+#include <signal.h>
 
 #include "HeartbeatMap.h"
 #include "ceph_context.h"
 #include "common/errno.h"
-
 #include "debug.h"
+
 #define dout_subsys ceph_subsys_heartbeatmap
 #undef dout_prefix
 #define dout_prefix *_dout << "heartbeat_map "
@@ -32,7 +28,9 @@ namespace ceph {
 HeartbeatMap::HeartbeatMap(CephContext *cct)
   : m_cct(cct),
     m_rwlock("HeartbeatMap::m_rwlock"),
-    m_inject_unhealthy_until(0)
+    m_inject_unhealthy_until(0),
+    m_unhealthy_workers(0),
+    m_total_workers(0)
 {
 }
 
@@ -41,13 +39,18 @@ HeartbeatMap::~HeartbeatMap()
   assert(m_workers.empty());
 }
 
-heartbeat_handle_d *HeartbeatMap::add_worker(const string& name)
+heartbeat_handle_d *HeartbeatMap::add_worker(const string& name, pthread_t thread_id)
 {
   m_rwlock.get_write();
   ldout(m_cct, 10) << "add_worker '" << name << "'" << dendl;
   heartbeat_handle_d *h = new heartbeat_handle_d(name);
+  ANNOTATE_BENIGN_RACE_SIZED(&h->timeout, sizeof(h->timeout),
+                             "heartbeat_handle_d timeout");
+  ANNOTATE_BENIGN_RACE_SIZED(&h->suicide_timeout, sizeof(h->suicide_timeout),
+                             "heartbeat_handle_d suicide_timeout");
   m_workers.push_front(h);
   h->list_item = m_workers.begin();
+  h->thread_id = thread_id;
   m_rwlock.put_write();
   return h;
 }
@@ -66,16 +69,18 @@ bool HeartbeatMap::_check(const heartbeat_handle_d *h, const char *who, time_t n
   bool healthy = true;
   time_t was;
 
-  was = h->timeout.read();
+  was = h->timeout;
   if (was && was < now) {
     ldout(m_cct, 1) << who << " '" << h->name << "'"
 		    << " had timed out after " << h->grace << dendl;
     healthy = false;
   }
-  was = h->suicide_timeout.read();
+  was = h->suicide_timeout;
   if (was && was < now) {
     ldout(m_cct, 1) << who << " '" << h->name << "'"
 		    << " had suicide timed out after " << h->suicide_grace << dendl;
+    pthread_kill(h->thread_id, SIGABRT);
+    sleep(1);
     assert(0 == "hit suicide timeout");
   }
   return healthy;
@@ -88,13 +93,13 @@ void HeartbeatMap::reset_timeout(heartbeat_handle_d *h, time_t grace, time_t sui
   time_t now = time(NULL);
   _check(h, "reset_timeout", now);
 
-  h->timeout.set(now + grace);
+  h->timeout = now + grace;
   h->grace = grace;
 
   if (suicide_grace)
-    h->suicide_timeout.set(now + suicide_grace);
+    h->suicide_timeout = now + suicide_grace;
   else
-    h->suicide_timeout.set(0);
+    h->suicide_timeout = 0;
   h->suicide_grace = suicide_grace;
 }
 
@@ -103,12 +108,14 @@ void HeartbeatMap::clear_timeout(heartbeat_handle_d *h)
   ldout(m_cct, 20) << "clear_timeout '" << h->name << "'" << dendl;
   time_t now = time(NULL);
   _check(h, "clear_timeout", now);
-  h->timeout.set(0);
-  h->suicide_timeout.set(0);
+  h->timeout = 0;
+  h->suicide_timeout = 0;
 }
 
 bool HeartbeatMap::is_healthy()
 {
+  int unhealthy = 0;
+  int total = 0;
   m_rwlock.get_read();
   time_t now = time(NULL);
   if (m_cct->_conf->heartbeat_inject_failure) {
@@ -129,11 +136,28 @@ bool HeartbeatMap::is_healthy()
     heartbeat_handle_d *h = *p;
     if (!_check(h, "is_healthy", now)) {
       healthy = false;
+      unhealthy++;
     }
+    total++;
   }
   m_rwlock.put_read();
-  ldout(m_cct, 20) << "is_healthy = " << (healthy ? "healthy" : "NOT HEALTHY") << dendl;
+
+  m_unhealthy_workers = unhealthy;
+  m_total_workers = total;
+
+  ldout(m_cct, 20) << "is_healthy = " << (healthy ? "healthy" : "NOT HEALTHY")
+    << ", total workers: " << total << ", number of unhealthy: " << unhealthy << dendl;
   return healthy;
+}
+
+int HeartbeatMap::get_unhealthy_workers() const
+{
+  return m_unhealthy_workers;
+}
+
+int HeartbeatMap::get_total_workers() const
+{
+  return m_total_workers;
 }
 
 void HeartbeatMap::check_touch_file()

@@ -2,7 +2,7 @@
  Ceph Object Gateway Swift API
 ===============================
 
-Ceph supports a RESTful API that is compatible with the basic data access model of the Swift API.
+Ceph supports a RESTful API that is compatible with the basic data access model of the `Swift API`_.
 
 API
 ---
@@ -31,7 +31,7 @@ The following table describes the support status for current Swift functional fe
 +=================================+=================+========================================+
 | **Authentication**              | Supported       |                                        |
 +---------------------------------+-----------------+----------------------------------------+
-| **Get Account Metadata**        | Supported       | No custom metadata                     |
+| **Get Account Metadata**        | Supported       |                                        |
 +---------------------------------+-----------------+----------------------------------------+
 | **Swift ACLs**                  | Supported       | Supports a subset of Swift ACLs        |
 +---------------------------------+-----------------+----------------------------------------+
@@ -49,7 +49,7 @@ The following table describes the support status for current Swift functional fe
 +---------------------------------+-----------------+----------------------------------------+
 | **List Objects**                | Supported       |                                        |
 +---------------------------------+-----------------+----------------------------------------+
-| **Static Website**              | Not Supported   |                                        |
+| **Static Website**              | Supported       |                                        |
 +---------------------------------+-----------------+----------------------------------------+
 | **Create Object**               | Supported       |                                        |
 +---------------------------------+-----------------+----------------------------------------+
@@ -65,10 +65,11 @@ The following table describes the support status for current Swift functional fe
 +---------------------------------+-----------------+----------------------------------------+
 | **Update Object Metadata**      | Supported       |                                        |
 +---------------------------------+-----------------+----------------------------------------+
-| **Expiring Objects**            | Not Supported   |                                        |
+| **Expiring Objects**            | Supported       |                                        |
 +---------------------------------+-----------------+----------------------------------------+
-| **Object Versioning**           | Not Supported   |                                        |
+| **Object Versioning**           | Supported       |                                        |
 +---------------------------------+-----------------+----------------------------------------+
 | **CORS**                        | Not Supported   |                                        |
 +---------------------------------+-----------------+----------------------------------------+
 
+.. _Swift API: http://developer.openstack.org/api-ref-objectstorage-v1.html

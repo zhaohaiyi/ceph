@@ -12,18 +12,7 @@
  *
  */
 
-#include "BackTrace.h"
-#include "common/ceph_context.h"
-#include "common/config.h"
 #include "common/debug.h"
-#include "common/Clock.h"
-#include "include/assert.h"
-
-#include <errno.h>
-#include <iostream>
-#include <pthread.h>
-#include <sstream>
-#include <time.h>
 
 namespace ceph {
   static CephContext *g_assert_context = NULL;
@@ -43,13 +32,13 @@ namespace ceph {
     g_assert_context = cct;
   }
 
-  void __ceph_assert_fail(const char *assertion, const char *file, int line, const char *func)
+  void __ceph_assert_fail(const char *assertion, const char *file, int line,
+			  const char *func)
   {
     ostringstream tss;
-    tss << ceph_clock_now(g_assert_context);
+    tss << ceph_clock_now();
 
     char buf[8096];
-    BackTrace *bt = new BackTrace(1);
     snprintf(buf, sizeof(buf),
 	     "%s: In function '%s' thread %llx time %s\n"
 	     "%s: %d: FAILED assert(%s)\n",
@@ -59,7 +48,7 @@ namespace ceph {
 
     // TODO: get rid of this memory allocation.
     ostringstream oss;
-    bt->print(oss);
+    oss << BackTrace(1);
     dout_emergency(oss.str());
 
     dout_emergency(" NOTE: a copy of the executable, or `objdump -rdS <executable>` "
@@ -67,20 +56,21 @@ namespace ceph {
 
     if (g_assert_context) {
       lderr(g_assert_context) << buf << std::endl;
-      bt->print(*_dout);
+      *_dout << oss.str();
       *_dout << " NOTE: a copy of the executable, or `objdump -rdS <executable>` "
 	     << "is needed to interpret this.\n" << dendl;
 
       g_assert_context->_log->dump_recent();
     }
 
-    throw FailedAssertion(bt);
+    abort();
   }
 
-  void __ceph_assertf_fail(const char *assertion, const char *file, int line, const char *func, const char* msg, ...)
+  void __ceph_assertf_fail(const char *assertion, const char *file, int line,
+			   const char *func, const char* msg, ...)
   {
     ostringstream tss;
-    tss << ceph_clock_now(g_assert_context);
+    tss << ceph_clock_now();
 
     class BufAppender {
     public:
@@ -128,7 +118,7 @@ namespace ceph {
 
     // TODO: get rid of this memory allocation.
     ostringstream oss;
-    bt->print(oss);
+    oss << *bt;
     dout_emergency(oss.str());
 
     dout_emergency(" NOTE: a copy of the executable, or `objdump -rdS <executable>` "
@@ -136,14 +126,14 @@ namespace ceph {
 
     if (g_assert_context) {
       lderr(g_assert_context) << buf << std::endl;
-      bt->print(*_dout);
+      *_dout << oss.str();
       *_dout << " NOTE: a copy of the executable, or `objdump -rdS <executable>` "
 	     << "is needed to interpret this.\n" << dendl;
 
       g_assert_context->_log->dump_recent();
     }
 
-    throw FailedAssertion(bt);
+    abort();
   }
 
   void __ceph_assert_warn(const char *assertion, const char *file,

@@ -37,6 +37,7 @@ namespace po = boost::program_options;
 class ErasureCodeCommand {
   po::variables_map vm;
   ErasureCodeProfile profile;
+  boost::intrusive_ptr<CephContext> cct;
 public:
   int setup(int argc, char** argv);
   int run();
@@ -82,12 +83,15 @@ int ErasureCodeCommand::setup(int argc, char** argv) {
     ceph_options.push_back(i->c_str());
   }
 
-  global_init(
+  cct = global_init(
     &def_args, ceph_options, CEPH_ENTITY_TYPE_CLIENT,
     CODE_ENVIRONMENT_UTILITY,
     CINIT_FLAG_NO_DEFAULT_CONFIG_FILE);
   common_init_finish(g_ceph_context);
   g_ceph_context->_conf->apply_changes(NULL);
+  const char* env = getenv("CEPH_LIB");
+  string directory(env ? env : ".libs");
+  g_conf->set_val_or_die("erasure_code_dir", directory, false);
 
   if (vm.count("help")) {
     cout << desc << std::endl;
@@ -110,9 +114,6 @@ int ErasureCodeCommand::setup(int argc, char** argv) {
     }
   }
 
-  if (profile.count("directory") == 0)
-    profile["directory"] = ".libs";
-
   return 0;
 }
 
@@ -128,7 +129,8 @@ int ErasureCodeCommand::plugin_exists() {
   ErasureCodePlugin *plugin = 0;
   Mutex::Locker l(instance.lock);
   stringstream ss;
-  int code = instance.load(vm["plugin_exists"].as<string>(), profile["directory"], &plugin, &ss);
+  int code = instance.load(vm["plugin_exists"].as<string>(),
+			   g_conf->get_val<std::string>("erasure_code_dir"), &plugin, &ss);
   if (code)
     cerr << ss.str() << endl;
   return code;
@@ -144,6 +146,7 @@ int ErasureCodeCommand::display_information() {
   }
 
   int code = instance.factory(profile["plugin"],
+			      g_conf->get_val<std::string>("erasure_code_dir"),
 			      profile,
 			      &erasure_code, &cerr);
   if (code)
@@ -188,7 +191,6 @@ int main(int argc, char** argv) {
  *   libtool --mode=execute valgrind --tool=memcheck --leak-check=full \
  *      ./ceph_erasure_code \
  *      --parameter plugin=jerasure \
- *      --parameter directory=.libs \
  *      --parameter technique=reed_sol_van \
  *      --parameter k=2 \
  *      --parameter m=2 \

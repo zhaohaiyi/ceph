@@ -1,11 +1,6 @@
-#include <errno.h>
 #include <map>
 
-#include "common/config.h"
 #include "common/debug.h"
-#include "include/str_list.h"
-
-#include "Crypto.h"
 #include "auth/RotatingKeyRing.h"
 #include "auth/KeyRing.h"
 
@@ -26,10 +21,10 @@ bool RotatingKeyRing::need_new_secrets(utime_t now) const
   return secrets.need_new_secrets(now);
 }
 
-void RotatingKeyRing::set_secrets(RotatingSecrets& s)
+void RotatingKeyRing::set_secrets(RotatingSecrets&& s)
 {
   Mutex::Locker l(lock);
-  secrets = s;
+  secrets = std::move(s);
   dump_rotating();
 }
 

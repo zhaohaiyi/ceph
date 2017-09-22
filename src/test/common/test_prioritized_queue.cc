@@ -6,7 +6,7 @@
 
 #include <numeric>
 #include <vector>
-
+#include <algorithm>
 
 using std::vector;
 
@@ -19,13 +19,13 @@ protected:
   enum { item_size  = 100, };
   vector<Item> items;
 
-  virtual void SetUp() {
+  void SetUp() override {
     for (int i = 0; i < item_size; i++) {
       items.push_back(Item(i));
     }
-    random_shuffle(items.begin(), items.end());
+    std::random_shuffle(items.begin(), items.end());
   }
-  virtual void TearDown() {
+  void TearDown() override {
     items.clear();
   }
 };
@@ -161,52 +161,6 @@ TEST_F(PrioritizedQueueTest, fairness_by_class) {
   }
 }
 
-template <typename T>
-struct Greater {
-  const T rhs;
-  Greater(const T& v) : rhs(v)
-  {}
-  bool operator()(const T& lhs) const {
-    return lhs > rhs;
-  }
-};
-
-TEST_F(PrioritizedQueueTest, remove_by_filter) {
-  const unsigned min_cost = 1;
-  const unsigned max_tokens_per_subqueue = 50;
-  PQ pq(max_tokens_per_subqueue, min_cost);
-
-  const Greater<Item> pred(item_size/2);
-  unsigned num_to_remove = 0;
-  for (unsigned i = 0; i < item_size; i++) {
-    const Item& item = items[i];
-    pq.enqueue(Klass(1), 0, 10, item);
-    if (pred(item)) {
-      num_to_remove++;
-    }
-  }
-  std::list<Item> removed;
-  pq.remove_by_filter(pred, &removed);
-
-  // see if the removed items are expected ones.
-  for (std::list<Item>::iterator it = removed.begin();
-       it != removed.end();
-       ++it) {
-    const Item& item = *it;
-    EXPECT_TRUE(pred(item));
-    items.erase(remove(items.begin(), items.end(), item), items.end());
-  }
-  EXPECT_EQ(num_to_remove, removed.size());
-  EXPECT_EQ(item_size - num_to_remove, pq.length());
-  EXPECT_EQ(item_size - num_to_remove, items.size());
-  // see if the remainder are expeceted also.
-  while (!pq.empty()) {
-    const Item item = pq.dequeue();
-    EXPECT_FALSE(pred(item));
-    items.erase(remove(items.begin(), items.end(), item), items.end());
-  }
-  EXPECT_TRUE(items.empty());
-}
 
 TEST_F(PrioritizedQueueTest, remove_by_class) {
   const unsigned min_cost = 1;

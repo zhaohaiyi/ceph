@@ -14,13 +14,13 @@ class RGWOp_Bucket_Info : public RGWRESTOp {
 public:
   RGWOp_Bucket_Info() {}
 
-  int check_caps(RGWUserCaps& caps) {
+  int check_caps(RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_READ);
   }
 
-  void execute();
+  void execute() override;
 
-  virtual const string name() { return "get_bucket_info"; }
+  const string name() override { return "get_bucket_info"; }
 };
 
 void RGWOp_Bucket_Info::execute()
@@ -29,13 +29,15 @@ void RGWOp_Bucket_Info::execute()
 
   bool fetch_stats;
 
-  std::string uid;
   std::string bucket;
 
-  RESTArgs::get_string(s, "uid", uid, &uid);
+  string uid_str;
+
+  RESTArgs::get_string(s, "uid", uid_str, &uid_str);
+  rgw_user uid(uid_str);
+
   RESTArgs::get_string(s, "bucket", bucket, &bucket);
   RESTArgs::get_bool(s, "stats", false, &fetch_stats);
-
 
   op_state.set_user_id(uid);
   op_state.set_bucket_name(bucket);
@@ -49,13 +51,13 @@ class RGWOp_Get_Policy : public RGWRESTOp {
 public:
   RGWOp_Get_Policy() {}
 
-  int check_caps(RGWUserCaps& caps) {
+  int check_caps(RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_READ);
   }
 
-  void execute();
+  void execute() override;
 
-  virtual const string name() { return "get_policy"; }
+  const string name() override { return "get_policy"; }
 };
 
 void RGWOp_Get_Policy::execute()
@@ -79,13 +81,13 @@ class RGWOp_Check_Bucket_Index : public RGWRESTOp {
 public:
   RGWOp_Check_Bucket_Index() {}
 
-  int check_caps(RGWUserCaps& caps) {
+  int check_caps(RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_WRITE);
   }
 
-  void execute();
+  void execute() override;
 
-  virtual const string name() { return "check_bucket_index"; }
+  const string name() override { return "check_bucket_index"; }
 };
 
 void RGWOp_Check_Bucket_Index::execute()
@@ -113,27 +115,28 @@ class RGWOp_Bucket_Link : public RGWRESTOp {
 public:
   RGWOp_Bucket_Link() {}
 
-  int check_caps(RGWUserCaps& caps) {
+  int check_caps(RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_WRITE);
   }
 
-  void execute();
+  void execute() override;
 
-  virtual const string name() { return "link_bucket"; }
+  const string name() override { return "link_bucket"; }
 };
 
 void RGWOp_Bucket_Link::execute()
 {
-  std::string uid;
+  std::string uid_str;
   std::string bucket;
   std::string bucket_id;
 
   RGWBucketAdminOpState op_state;
 
-  RESTArgs::get_string(s, "uid", uid, &uid);
+  RESTArgs::get_string(s, "uid", uid_str, &uid_str);
   RESTArgs::get_string(s, "bucket", bucket, &bucket);
   RESTArgs::get_string(s, "bucket-id", bucket_id, &bucket_id);
 
+  rgw_user uid(uid_str);
   op_state.set_user_id(uid);
   op_state.set_bucket_name(bucket);
   op_state.set_bucket_id(bucket_id);
@@ -146,23 +149,25 @@ class RGWOp_Bucket_Unlink : public RGWRESTOp {
 public:
   RGWOp_Bucket_Unlink() {}
 
-  int check_caps(RGWUserCaps& caps) {
+  int check_caps(RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_WRITE);
   }
 
-  void execute();
+  void execute() override;
 
-  virtual const string name() { return "unlink_bucket"; }
+  const string name() override { return "unlink_bucket"; }
 };
 
 void RGWOp_Bucket_Unlink::execute()
 {
-  std::string uid;
+  std::string uid_str;
   std::string bucket;
 
   RGWBucketAdminOpState op_state;
 
-  RESTArgs::get_string(s, "uid", uid, &uid);
+  RESTArgs::get_string(s, "uid", uid_str, &uid_str);
+  rgw_user uid(uid_str);
+
   RESTArgs::get_string(s, "bucket", bucket, &bucket);
 
   op_state.set_user_id(uid);
@@ -176,13 +181,13 @@ class RGWOp_Bucket_Remove : public RGWRESTOp {
 public:
   RGWOp_Bucket_Remove() {}
 
-  int check_caps(RGWUserCaps& caps) {
+  int check_caps(RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_WRITE);
   }
 
-  void execute();
+  void execute() override;
 
-  virtual const string name() { return "remove_bucket"; }
+  const string name() override { return "remove_bucket"; }
 };
 
 void RGWOp_Bucket_Remove::execute()
@@ -206,13 +211,13 @@ class RGWOp_Object_Remove: public RGWRESTOp {
 public:
   RGWOp_Object_Remove() {}
 
-  int check_caps(RGWUserCaps& caps) {
+  int check_caps(RGWUserCaps& caps) override {
     return caps.check_cap("buckets", RGW_CAP_WRITE);
   }
 
-  void execute();
+  void execute() override;
 
-  virtual const string name() { return "remove_object"; }
+  const string name() override { return "remove_object"; }
 };
 
 void RGWOp_Object_Remove::execute()

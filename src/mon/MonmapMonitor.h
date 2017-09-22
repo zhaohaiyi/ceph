@@ -44,44 +44,44 @@ class MonmapMonitor : public PaxosService {
   }
   MonMap pending_map; //the pending map awaiting passage
 
-  void create_initial();
+  void create_initial() override;
 
-  void update_from_paxos(bool *need_bootstrap);
+  void update_from_paxos(bool *need_bootstrap) override;
 
-  void create_pending();
+  void create_pending() override;
 
-  void encode_pending(MonitorDBStore::TransactionRef t);
+  void encode_pending(MonitorDBStore::TransactionRef t) override;
   // we always encode the full map; we have no use for full versions
-  virtual void encode_full(MonitorDBStore::TransactionRef t) { }
+  void encode_full(MonitorDBStore::TransactionRef t) override { }
 
-  void on_active();
+  void on_active() override;
+  void apply_mon_features(const mon_feature_t& features);
 
   void dump_info(Formatter *f);
 
-  bool preprocess_query(PaxosServiceMessage *m);
-  bool prepare_update(PaxosServiceMessage *m);
+  bool preprocess_query(MonOpRequestRef op) override;
+  bool prepare_update(MonOpRequestRef op) override;
 
-  bool preprocess_join(MMonJoin *m);
-  bool prepare_join(MMonJoin *m);
+  bool preprocess_join(MonOpRequestRef op);
+  bool prepare_join(MonOpRequestRef op);
 
-  bool preprocess_command(MMonCommand *m);
-  bool prepare_command(MMonCommand *m);
-
-  void get_health(list<pair<health_status_t,string> >& summary,
-		  list<pair<health_status_t,string> > *detail) const;
+  bool preprocess_command(MonOpRequestRef op);
+  bool prepare_command(MonOpRequestRef op);
 
   int get_monmap(bufferlist &bl);
-  int get_monmap(MonMap &m);
 
   /*
    * Since monitors are pretty
    * important, this implementation will just write 0.0.
    */
-  bool should_propose(double& delay);
+  bool should_propose(double& delay) override;
 
-  void tick();
+  void check_sub(Subscription *sub);
 
- private:
+private:
+  void check_subs();
+
+private:
   bufferlist monmap_bl;
 };
 

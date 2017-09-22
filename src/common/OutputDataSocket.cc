@@ -12,34 +12,17 @@
  * 
  */
 
-#include "include/int_types.h"
-
-#include "common/Thread.h"
 #include "common/OutputDataSocket.h"
-#include "common/config.h"
-#include "common/dout.h"
 #include "common/errno.h"
-#include "common/perf_counters.h"
 #include "common/pipe.h"
 #include "common/safe_io.h"
-#include "common/version.h"
-#include "common/Formatter.h"
-
-#include <errno.h>
-#include <fcntl.h>
-#include <map>
-#include <poll.h>
-#include <set>
-#include <sstream>
-#include <stdint.h>
-#include <string.h>
-#include <string>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/un.h>
-#include <unistd.h>
-
 #include "include/compat.h"
+
+#include <poll.h>
+#include <sys/un.h>
+
+// re-include our assert to clobber the system one; fix dout:
+#include "include/assert.h"
 
 #define dout_subsys ceph_subsys_asok
 #undef dout_prefix
@@ -179,14 +162,14 @@ std::string OutputDataSocket::bind_and_listen(const std::string &sock_path, int 
   address.sun_family = AF_UNIX;
   snprintf(address.sun_path, sizeof(address.sun_path),
 	   "%s", sock_path.c_str());
-  if (bind(sock_fd, (struct sockaddr*)&address,
+  if (::bind(sock_fd, (struct sockaddr*)&address,
 	   sizeof(struct sockaddr_un)) != 0) {
     int err = errno;
     if (err == EADDRINUSE) {
       // The old UNIX domain socket must still be there.
       // Let's unlink it and try again.
       VOID_TEMP_FAILURE_RETRY(unlink(sock_path.c_str()));
-      if (bind(sock_fd, (struct sockaddr*)&address,
+      if (::bind(sock_fd, (struct sockaddr*)&address,
 	       sizeof(struct sockaddr_un)) == 0) {
 	err = 0;
       }
@@ -315,8 +298,7 @@ void OutputDataSocket::handle_connection(int fd)
 int OutputDataSocket::dump_data(int fd)
 {
   m_lock.Lock(); 
-  list<bufferlist> l;
-  l = data;
+  list<bufferlist> l = std::move(data);
   data.clear();
   data_size = 0;
   m_lock.Unlock();
@@ -371,7 +353,7 @@ bool OutputDataSocket::init(const std::string &path)
   m_shutdown_rd_fd = pipe_rd;
   m_shutdown_wr_fd = pipe_wr;
   m_path = path;
-  create();
+  create("out_data_socket");
   add_cleanup_file(m_path.c_str());
   return true;
 }

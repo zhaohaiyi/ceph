@@ -17,8 +17,9 @@
 
 #include "common/debug.h"
 #include "ErasureCodeJerasure.h"
-#include "crush/CrushWrapper.h"
-#include "osd/osd_types.h"
+
+using namespace std;
+
 extern "C" {
 #include "jerasure.h"
 #include "reed_sol.h"
@@ -29,6 +30,7 @@ extern "C" {
 
 #define LARGEST_VECTOR_WORDSIZE 16
 
+#define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_osd
 #undef dout_prefix
 #define dout_prefix _prefix(_dout)
@@ -38,36 +40,17 @@ static ostream& _prefix(std::ostream* _dout)
   return *_dout << "ErasureCodeJerasure: ";
 }
 
-int ErasureCodeJerasure::create_ruleset(const string &name,
-					CrushWrapper &crush,
-					ostream *ss) const
-{
-  int ruleid = crush.add_simple_ruleset(name, ruleset_root, ruleset_failure_domain,
-					"indep", pg_pool_t::TYPE_ERASURE, ss);
-  if (ruleid < 0)
-    return ruleid;
-  else {
-    crush.set_rule_mask_max_size(ruleid, get_chunk_count());
-    return crush.get_rule_mask_ruleset(ruleid);
-  }
-}
 
 int ErasureCodeJerasure::init(ErasureCodeProfile& profile, ostream *ss)
 {
   int err = 0;
   dout(10) << "technique=" << technique << dendl;
   profile["technique"] = technique;
-  err |= to_string("ruleset-root", profile,
-		   &ruleset_root,
-		   DEFAULT_RULESET_ROOT, ss);
-  err |= to_string("ruleset-failure-domain", profile,
-		   &ruleset_failure_domain,
-		   DEFAULT_RULESET_FAILURE_DOMAIN, ss);
   err |= parse(profile, ss);
   if (err)
     return err;
   prepare();
-  return err;
+  return ErasureCode::init(profile, ss);
 }
 
 int ErasureCodeJerasure::parse(ErasureCodeProfile &profile,
@@ -84,6 +67,7 @@ int ErasureCodeJerasure::parse(ErasureCodeProfile &profile,
     chunk_mapping.clear();
     err = -EINVAL;
   }
+  err |= sanity_check_k(k, ss);
   return err;
 }
 
@@ -249,8 +233,7 @@ int ErasureCodeJerasureReedSolomonRAID6::parse(ErasureCodeProfile &profile,
 					       ostream *ss)
 {
   int err = ErasureCodeJerasure::parse(profile, ss);
-  if (profile.find("m") != profile.end())
-    profile.erase("m");
+  profile.erase("m");
   m = 2;
   if (w != 8 && w != 16 && w != 32) {
     *ss << "ReedSolomonRAID6: w=" << w
@@ -488,11 +471,9 @@ int ErasureCodeJerasureLiber8tion::parse(ErasureCodeProfile &profile,
 					 ostream *ss)
 {
   int err = ErasureCodeJerasure::parse(profile, ss);
-  if (profile.find("m") != profile.end())
-    profile.erase("m");
+  profile.erase("m");
   err |= to_int("m", profile, &m, DEFAULT_M, ss);
-  if (profile.find("w") != profile.end())
-    profile.erase("w");
+  profile.erase("w");
   err |= to_int("w", profile, &w, DEFAULT_W, ss);
   err |= to_int("packetsize", profile, &packetsize, DEFAULT_PACKETSIZE, ss);
 

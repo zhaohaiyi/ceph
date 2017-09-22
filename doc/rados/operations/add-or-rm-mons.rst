@@ -114,11 +114,6 @@ on ``mon.a``).
 	sudo ceph-mon -i {mon-id} --mkfs --monmap {tmp}/{map-filename} --keyring {tmp}/{key-filename}
 	
 
-#. Add the new monitor to the list of monitors for you cluster (runtime). This enables 
-   other nodes to use this monitor during their initial startup. ::
-
-	ceph mon add <mon-id> <ip>[:<port>]
-
 #. Start the new monitor and it will automatically join the cluster.
    The daemon needs to know which address to bind to, either via
    ``--public-addr {ip:port}`` or by setting ``mon addr`` in the
@@ -248,9 +243,9 @@ catch up with the current state of the cluster.
 
 If monitors discovered each other through the Ceph configuration file instead of
 through the monmap, it would introduce additional risks because the Ceph
-configuration files aren't updated and distributed automatically. Monitors
+configuration files are not updated and distributed automatically. Monitors
 might inadvertently use an older ``ceph.conf`` file, fail to recognize a
-monitor, fall out of a quorum, or develop a situation where `Paxos`_ isn't able
+monitor, fall out of a quorum, or develop a situation where `Paxos`_ is not able
 to determine the current state of the system accurately. Consequently,  making
 changes to an existing monitor's IP address must be done with  great care.
 

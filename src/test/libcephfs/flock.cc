@@ -20,8 +20,9 @@
 
 #include "include/cephfs/libcephfs.h"
 #include <errno.h>
-#include <sys/fcntl.h>
+#include <fcntl.h>
 #include <unistd.h>
+#include <sys/file.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -39,8 +40,8 @@
 // Startup common: create and mount ceph fs
 #define STARTUP_CEPH() do {				\
     ASSERT_EQ(0, ceph_create(&cmount, NULL));		\
-    ASSERT_EQ(0, ceph_conf_parse_env(cmount, NULL));	\
     ASSERT_EQ(0, ceph_conf_read_file(cmount, NULL));	\
+    ASSERT_EQ(0, ceph_conf_parse_env(cmount, NULL));	\
     ASSERT_EQ(0, ceph_mount(cmount, NULL));		\
   } while(0)
 
@@ -69,7 +70,6 @@ static const struct timespec* abstime(struct timespec &ts, long ms) {
 }
 
 /* Basic locking */
-
 TEST(LibCephFS, BasicLocking) {
   struct ceph_mount_info *cmount = NULL;
   STARTUP_CEPH();
@@ -426,7 +426,8 @@ static void process_ConcurrentLocking(str_ConcurrentLocking& s) {
   exit(EXIT_SUCCESS);
 }
 
-TEST(LibCephFS, InterProcessLocking) {
+// Disabled because of fork() issues (http://tracker.ceph.com/issues/16556)
+TEST(LibCephFS, DISABLED_InterProcessLocking) {
   PROCESS_SLOW_MS();
   // Process synchronization
   char c_file[1024];
@@ -525,7 +526,8 @@ TEST(LibCephFS, InterProcessLocking) {
   CLEANUP_CEPH();
 }
 
-TEST(LibCephFS, ThreesomeInterProcessLocking) {
+// Disabled because of fork() issues (http://tracker.ceph.com/issues/16556)
+TEST(LibCephFS, DISABLED_ThreesomeInterProcessLocking) {
   PROCESS_SLOW_MS();
   // Process synchronization
   char c_file[1024];

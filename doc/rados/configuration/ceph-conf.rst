@@ -227,6 +227,11 @@ Ceph supports the following metavariables:
 :Description: Expands to ``$type.$id``.
 :Example: ``/var/run/ceph/$cluster-$name.asok``
 
+``$pid``
+
+:Description: Expands to daemon pid.
+:Example: ``/var/run/ceph/$cluster-$name-$pid.asok``
+
 
 .. _ceph-conf-common-settings:
 
@@ -322,14 +327,12 @@ authentication in the ``[global]`` section of your Ceph configuration file. ::
 	auth service required = cephx
 	auth client required = cephx
 
-Additionally, you should enable message signing. See `Cephx Config Reference`_
-and  `Cephx Authentication`_ for details. 
+Additionally, you should enable message signing. See `Cephx Config Reference`_ for details. 
 
 .. important:: When upgrading, we recommend expressly disabling authentication 
    first, then perform the upgrade. Once the upgrade is complete, re-enable 
    authentication.
 
-.. _Cephx Authentication: ../../operations/authentication
 .. _Cephx Config Reference: ../auth-config-ref
 
 
@@ -380,8 +383,9 @@ use with Ceph, and mount it to the directory you just created::
 	sudo mkfs -t {fstype} /dev/{disk}
 	sudo mount -o user_xattr /dev/{hdd} /var/lib/ceph/osd/ceph-{osd-number}
 
-We recommend using the ``xfs`` file system or the ``btrfs`` file system when
-running :command:`mkfs`.
+We recommend using the ``xfs`` file system when running
+:command:`mkfs`.  (``btrfs`` and ``ext4`` are not recommended and no
+longer tested.)
 
 See the `OSD Config Reference`_ for additional configuration details.
 
@@ -453,6 +457,104 @@ If you are on a machine where osd.0 is running, the command would be::
 
     ceph daemon osd.0 config show | less
 
+Reading Configuration Metadata at Runtime
+=========================================
+
+Information about the available configuration options is available via
+the ``config help`` command:
+
+::
+
+	ceph daemon {daemon-type}.{id} config help | less
+
+
+This metadata is primarily intended to be used when integrating other
+software with Ceph, such as graphical user interfaces.  The output is
+a list of JSON objects, for example:
+
+::
+
+        {                                                                       
+            "name": "mon_host",                                                 
+            "type": "std::string",                                              
+            "level": "basic",                                                   
+            "desc": "list of hosts or addresses to search for a monitor",            
+            "long_desc": "This is a comma, whitespace, or semicolon separated list of IP addresses or hostnames. Hostnames are resolved via DNS and all A or AAAA records are included in the search list.",
+            "default": "",                                                      
+            "daemon_default": "",                                               
+            "tags": [],                                                         
+            "services": [                                                       
+                "common"                                                        
+            ],                                                                  
+            "see_also": [],                                                     
+            "enum_values": [],                                                  
+            "min": "",                                                          
+            "max": ""                                                           
+        }
+
+type
+____
+
+The type of the setting, given as a C++ type name.
+
+level
+_____
+
+One of `basic`, `advanced`, `dev`.  The `dev` options are not intended
+for use outside of development and testing.
+
+desc
+____
+
+A short description -- this is a sentence fragment suitable for display
+in small spaces like a single line in a list.
+
+long_desc
+_________
+
+A full description of what the setting does, this may be as long as needed.
+
+default
+_______
+
+The default value, if any.
+
+daemon_default
+______________
+
+An alternative default used for daemons (services) as opposed to clients.
+
+tags
+____
+
+A list of strings indicating topics to which this setting relates.  Examples
+of tags are `performance` and `networking`.
+
+services
+________
+
+A list of strings indicating which Ceph services the setting relates to, such
+as `osd`, `mds`, `mon`.  For settings that are relevant to any Ceph client
+or server, `common` is used.
+
+see_also
+________
+
+A list of strings indicating other configuration options that may also
+be of interest to a user setting this option.
+
+enum_values
+___________
+
+Optional: a list of strings indicating the valid settings.
+
+min, max
+________
+
+Optional: upper and lower (inclusive) bounds on valid settings.
+
+
+
 
 Running Multiple Clusters
 =========================
@@ -520,8 +622,7 @@ To invoke a cluster other than the default ``ceph`` cluster, use the
 	ceph -c openstack.conf health
 
 
-.. _Hardware Recommendations: ../../../install/hardware-recommendations
-.. _hardware recommendations: ../../../install/hardware-recommendations
+.. _Hardware Recommendations: ../../../start/hardware-recommendations
 .. _Network Configuration Reference: ../network-config-ref
 .. _OSD Config Reference: ../osd-config-ref
 .. _Configuring Monitor/OSD Interaction: ../mon-osd-interaction

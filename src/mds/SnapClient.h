@@ -19,15 +19,15 @@
 #include "snap.h"
 
 class MDSInternalContextBase;
-class MDS;
+class MDSRank;
 class LogSegment;
 
 class SnapClient : public MDSTableClient {
 public:
-  SnapClient(MDS *m) : MDSTableClient(m, TABLE_SNAP) {}
+  explicit SnapClient(MDSRank *m) : MDSTableClient(m, TABLE_SNAP) {}
 
-  void resend_queries() {}
-  void handle_query_result(MMDSTableRequest *m) {}
+  void resend_queries() override {}
+  void handle_query_result(MMDSTableRequest *m) override {}
 
   void prepare_create(inodeno_t dirino, const string& name, utime_t stamp,
 		      version_t *pstid, bufferlist *pbl, MDSInternalContextBase *onfinish) {

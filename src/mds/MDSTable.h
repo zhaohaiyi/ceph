@@ -17,21 +17,21 @@
 
 #include "mdstypes.h"
 #include "mds_table_types.h"
-#include "include/buffer.h"
+#include "include/buffer_fwd.h"
 
-class MDS;
+class MDSRank;
 class Context;
 class MDSInternalContextBase;
 
 class MDSTable {
 public:
-  MDS *mds;
+  MDSRank *mds;
 protected:
   const char *table_name;
   bool per_mds;
   mds_rank_t rank;
 
-  object_t get_object_name();
+  object_t get_object_name() const;
   
   static const int STATE_UNDEF   = 0;
   static const int STATE_OPENING = 1;
@@ -44,7 +44,7 @@ protected:
   map<version_t, list<MDSInternalContextBase*> > waitfor_save;
   
 public:
-  MDSTable(MDS *m, const char *n, bool is_per_mds) :
+  MDSTable(MDSRank *m, const char *n, bool is_per_mds) :
     mds(m), table_name(n), per_mds(is_per_mds), rank(MDS_RANK_NONE),
     state(STATE_UNDEF),
     version(0), committing_version(0), committed_version(0), projected_version(0) {}
@@ -55,10 +55,10 @@ public:
     rank = r;
   }
 
-  version_t get_version() { return version; }
-  version_t get_committed_version() { return committed_version; }
-  version_t get_committing_version() { return committing_version; }
-  version_t get_projected_version() { return projected_version; }
+  version_t get_version() const { return version; }
+  version_t get_committed_version() const { return committed_version; }
+  version_t get_committing_version() const { return committing_version; }
+  version_t get_projected_version() const { return projected_version; }
   
   void force_replay_version(version_t v) {
     version = projected_version = v;
@@ -68,9 +68,9 @@ public:
   //version_t inc_version() { return ++version; }
 
   // load/save from disk (hack)
-  bool is_undef() { return state == STATE_UNDEF; }
-  bool is_active() { return state == STATE_ACTIVE; }
-  bool is_opening() { return state == STATE_OPENING; }
+  bool is_undef() const { return state == STATE_UNDEF; }
+  bool is_active() const { return state == STATE_ACTIVE; }
+  bool is_opening() const { return state == STATE_OPENING; }
 
   void reset();
   void save(MDSInternalContextBase *onfinish=0, version_t need=0);

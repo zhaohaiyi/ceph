@@ -16,8 +16,6 @@
 #ifndef CEPH_MGETPOOLSTATS_H
 #define CEPH_MGETPOOLSTATS_H
 
-#include <uuid/uuid.h>
-
 #include "messages/PaxosServiceMessage.h"
 
 class MGetPoolStats : public PaxosServiceMessage {
@@ -33,20 +31,20 @@ public:
   }
 
 private:
-  ~MGetPoolStats() {}
+  ~MGetPoolStats() override {}
 
 public:
-  const char *get_type_name() const { return "getpoolstats"; }
-  void print(ostream& out) const {
+  const char *get_type_name() const override { return "getpoolstats"; }
+  void print(ostream& out) const override {
     out << "getpoolstats(" << get_tid() << " " << pools << " v" << version << ")";
   }
 
-  void encode_payload(uint64_t features) {
+  void encode_payload(uint64_t features) override {
     paxos_encode();
     ::encode(fsid, payload);
     ::encode(pools, payload);
   }
-  void decode_payload() {
+  void decode_payload() override {
     bufferlist::iterator p = payload.begin();
     paxos_decode(p);
     ::decode(fsid, p);

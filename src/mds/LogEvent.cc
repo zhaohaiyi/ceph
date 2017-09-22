@@ -15,7 +15,7 @@
 #include "common/config.h"
 #include "LogEvent.h"
 
-#include "MDS.h"
+#include "MDSRank.h"
 
 // events i know of
 #include "events/ESubtreeMap.h"
@@ -37,6 +37,8 @@
 #include "events/ETableServer.h"
 
 #include "events/ENoOp.h"
+
+#define dout_context g_ceph_context
 
 
 LogEvent *LogEvent::decode(bufferlist& bl)

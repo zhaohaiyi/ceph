@@ -1,15 +1,10 @@
-
 #ifdef __KERNEL__
 # include <linux/slab.h>
+# include <linux/crush/crush.h>
 #else
-# include <stdlib.h>
-# include <assert.h>
-# define kfree(x) do { if (x) free(x); } while (0)
-# define BUG_ON(x) assert(!(x))
-# include "include/int_types.h"
+# include "crush_compat.h"
+# include "crush.h"
 #endif
-
-#include "crush.h"
 
 const char *crush_bucket_alg_name(int alg)
 {
@@ -50,7 +45,6 @@ int crush_get_bucket_item_weight(const struct crush_bucket *b, int p)
 
 void crush_destroy_bucket_uniform(struct crush_bucket_uniform *b)
 {
-	kfree(b->h.perm);
 	kfree(b->h.items);
 	kfree(b);
 }
@@ -59,14 +53,12 @@ void crush_destroy_bucket_list(struct crush_bucket_list *b)
 {
 	kfree(b->item_weights);
 	kfree(b->sum_weights);
-	kfree(b->h.perm);
 	kfree(b->h.items);
 	kfree(b);
 }
 
 void crush_destroy_bucket_tree(struct crush_bucket_tree *b)
 {
-	kfree(b->h.perm);
 	kfree(b->h.items);
 	kfree(b->node_weights);
 	kfree(b);
@@ -76,7 +68,6 @@ void crush_destroy_bucket_straw(struct crush_bucket_straw *b)
 {
 	kfree(b->straws);
 	kfree(b->item_weights);
-	kfree(b->h.perm);
 	kfree(b->h.items);
 	kfree(b);
 }
@@ -84,7 +75,6 @@ void crush_destroy_bucket_straw(struct crush_bucket_straw *b)
 void crush_destroy_bucket_straw2(struct crush_bucket_straw2 *b)
 {
 	kfree(b->item_weights);
-	kfree(b->h.perm);
 	kfree(b->h.items);
 	kfree(b);
 }
@@ -135,31 +125,13 @@ void crush_destroy(struct crush_map *map)
 		kfree(map->rules);
 	}
 
+#ifndef __KERNEL__
 	kfree(map->choose_tries);
+#endif
 	kfree(map);
 }
 
 void crush_destroy_rule(struct crush_rule *rule)
 {
 	kfree(rule);
-}
-
-// methods to check for safe arithmetic operations
-int crush_addition_is_unsafe(__u32 a, __u32 b)
-{
-  if ((((__u32)(-1)) - b) < a)
-    return 1;
-  else
-    return 0;
-}
-
-int crush_multiplication_is_unsafe(__u32  a, __u32 b)
-{
-  // prevent division by zero 
-  if (!b)
-    return 1;
-  if ((((__u32)(-1)) / b) < a)
-    return 1;
-  else
-    return 0;
 }

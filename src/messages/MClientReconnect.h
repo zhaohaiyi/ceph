@@ -30,19 +30,19 @@ public:
 
   MClientReconnect() : Message(CEPH_MSG_CLIENT_RECONNECT, HEAD_VERSION) { }
 private:
-  ~MClientReconnect() {}
+  ~MClientReconnect() override {}
 
 public:
-  const char *get_type_name() const { return "client_reconnect"; }
-  void print(ostream& out) const {
+  const char *get_type_name() const override { return "client_reconnect"; }
+  void print(ostream& out) const override {
     out << "client_reconnect("
 	<< caps.size() << " caps)";
   }
 
   void add_cap(inodeno_t ino, uint64_t cap_id, inodeno_t pathbase, const string& path,
-	       int wanted, int issued, inodeno_t sr, bufferlist& lb)
+	       int wanted, int issued, inodeno_t sr, snapid_t sf, bufferlist& lb)
   {
-    caps[ino] = cap_reconnect_t(cap_id, pathbase, path, wanted, issued, sr, lb);
+    caps[ino] = cap_reconnect_t(cap_id, pathbase, path, wanted, issued, sr, sf, lb);
   }
   void add_snaprealm(inodeno_t ino, snapid_t seq, inodeno_t parent) {
     ceph_mds_snaprealm_reconnect r;
@@ -52,10 +52,11 @@ public:
     realms.push_back(r);
   }
 
-  void encode_payload(uint64_t features) {
+  void encode_payload(uint64_t features) override {
     data.clear();
     if (features & CEPH_FEATURE_MDSENC) {
       ::encode(caps, data);
+      header.version = HEAD_VERSION;
     } else if (features & CEPH_FEATURE_FLOCK) {
       // encode with old cap_reconnect_t encoding
       __u32 n = caps.size();
@@ -75,7 +76,7 @@ public:
     }
     ::encode_nohead(realms, data);
   }
-  void decode_payload() {
+  void decode_payload() override {
     bufferlist::iterator p = data.begin();
     if (header.version >= 3) {
       // new protocol

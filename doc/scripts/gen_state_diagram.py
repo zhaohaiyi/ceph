@@ -1,9 +1,13 @@
 #!/usr/bin/env python
+from __future__ import print_function
+
 import re
 import sys
 
+
 def do_filter(generator):
     return acc_lines(remove_multiline_comments(to_char(remove_single_line_comments(generator))))
+
 
 def acc_lines(generator):
     current = ""
@@ -15,6 +19,7 @@ def acc_lines(generator):
             yield current.lstrip("\n")
             current = ""
 
+
 def to_char(generator):
     for line in generator:
         for char in line:
@@ -23,11 +28,13 @@ def to_char(generator):
             else:
                 yield ' '
 
+
 def remove_single_line_comments(generator):
     for i in generator:
         if len(i) and i[0] == '#':
             continue
         yield re.sub(r'//.*', '', i)
+
 
 def remove_multiline_comments(generator):
     saw = ""
@@ -53,6 +60,7 @@ def remove_multiline_comments(generator):
             saw = "/"
             continue
         yield char
+
 
 class StateMachineRenderer(object):
     def __init__(self):
@@ -96,7 +104,7 @@ class StateMachineRenderer(object):
     def get_state(self, line):
         if "boost::statechart::state_machine" in line:
             tokens = re.search(
-                r"boost::statechart::state_machine<\s*(\w*),\s*(\w*)\s*>", 
+                r"boost::statechart::state_machine<\s*(\w*),\s*(\w*)\s*>",
                 line)
             if tokens is None:
                 raise "Error: malformed state_machine line: " + line
@@ -142,16 +150,16 @@ class StateMachineRenderer(object):
         for state in self.machines.keys():
             if state not in self.states.keys():
                 top_level.append(state)
-        print >> sys.stderr, "Top Level States: ", str(top_level)
-        print """digraph G {"""
-        print '\tsize="7,7"'
-        print """\tcompound=true;"""
+        print('Top Level States: ', top_level, file=sys.stderr)
+        print('digraph G {')
+        print('\tsize="7,7"')
+        print('\tcompound=true;')
         for i in self.emit_state(top_level[0]):
-            print '\t' + i
+            print('\t' + i)
         for i in self.edges.keys():
             for j in self.emit_event(i):
-                print j
-        print """}"""
+                print(j)
+        print('}')
 
     def emit_state(self, state):
         if state in self.state_contents.keys():
@@ -194,8 +202,7 @@ class StateMachineRenderer(object):
             yield("%s -> %s %s;" % (fro, to, append(appendix)))
 
 
-
-INPUT_GENERATOR = do_filter(sys.stdin.xreadlines())
+INPUT_GENERATOR = do_filter(line for line in sys.stdin)
 RENDERER = StateMachineRenderer()
 RENDERER.read_input(INPUT_GENERATOR)
 RENDERER.emit_dot()

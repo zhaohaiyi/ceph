@@ -132,7 +132,7 @@ int main(int argc, const char **argv)
 
     /*
      * now that we have the data to write, let's send it to an object.
-     * We'll use the asynchronous interface for simplicity.
+     * We'll use the synchronous interface for simplicity.
      */
     ret = io_ctx.write_full(object_name, bl);
     if (ret < 0) {
@@ -149,7 +149,7 @@ int main(int argc, const char **argv)
    * now let's read that object back! Just for fun, we'll do it using
    * async IO instead of synchronous. (This would be more useful if we
    * wanted to send off multiple reads at once; see
-   * http://ceph.com/docs/master/rados/api/librados/#asychronous-io )
+   * http://docs.ceph.com/docs/master/rados/api/librados/#asychronous-io )
    */
   {
     librados::bufferlist read_buf;
@@ -172,8 +172,10 @@ int main(int argc, const char **argv)
       goto out;
     } else {
       std::cout << "we read our object " << object_name
-	  << ", and got back " << ret << " bytes with contents\n"
-	  << read_buf.c_str() << std::endl;
+	  << ", and got back " << ret << " bytes with contents\n";
+      std::string read_string;
+      read_buf.copy(0, ret, read_string);
+      std::cout << read_string << std::endl;
     }
   }
 

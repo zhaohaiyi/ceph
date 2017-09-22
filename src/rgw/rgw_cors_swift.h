@@ -17,14 +17,11 @@
 
 #include <map>
 #include <string>
-#include <iostream>
 #include <vector>
 #include <include/types.h>
 #include <include/str_list.h>
 
 #include "rgw_cors.h"
-
-using namespace std;
 
 class RGWCORSConfiguration_SWIFT : public RGWCORSConfiguration
 {

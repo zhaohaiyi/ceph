@@ -78,10 +78,10 @@ namespace rados {
         locker_info_t(const utime_t& _e, const entity_addr_t& _a,
                       const string& _d) :  expiration(_e), addr(_a), description(_d) {}
 
-        void encode(bufferlist &bl) const {
+        void encode(bufferlist &bl, uint64_t features) const {
           ENCODE_START(1, 1, bl);
           ::encode(expiration, bl);
-          ::encode(addr, bl);
+          ::encode(addr, bl, features);
           ::encode(description, bl);
           ENCODE_FINISH(bl);
         }
@@ -95,9 +95,42 @@ namespace rados {
         void dump(Formatter *f) const;
         static void generate_test_instances(list<locker_info_t *>& o);
       };
-      WRITE_CLASS_ENCODER(rados::cls::lock::locker_info_t)
+      WRITE_CLASS_ENCODER_FEATURES(rados::cls::lock::locker_info_t)
+
+      struct lock_info_t {
+        map<locker_id_t, locker_info_t> lockers; // map of lockers
+        ClsLockType lock_type;                   // lock type (exclusive / shared)
+        string tag;                              // tag: operations on lock can only succeed with this tag
+                                                 //      as long as set of non expired lockers
+                                                 //      is bigger than 0.
+
+        void encode(bufferlist &bl, uint64_t features) const {
+          ENCODE_START(1, 1, bl);
+          ::encode(lockers, bl, features);
+          uint8_t t = (uint8_t)lock_type;
+          ::encode(t, bl);
+          ::encode(tag, bl);
+          ENCODE_FINISH(bl);
+        }
+        void decode(bufferlist::iterator &bl) {
+          DECODE_START_LEGACY_COMPAT_LEN(1, 1, 1, bl);
+          ::decode(lockers, bl);
+          uint8_t t;
+          ::decode(t, bl);
+          lock_type = (ClsLockType)t;
+          ::decode(tag, bl);
+          DECODE_FINISH(bl);
+        }
+        lock_info_t() : lock_type(LOCK_NONE) {}
+        void dump(Formatter *f) const;
+        static void generate_test_instances(list<lock_info_t *>& o);
+      };
+      WRITE_CLASS_ENCODER_FEATURES(rados::cls::lock::lock_info_t)
     }
   }
 }
+WRITE_CLASS_ENCODER_FEATURES(rados::cls::lock::locker_info_t)
+WRITE_CLASS_ENCODER(rados::cls::lock::locker_id_t)
+WRITE_CLASS_ENCODER_FEATURES(rados::cls::lock::lock_info_t)
 
 #endif

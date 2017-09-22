@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -e
 
 mydir=`dirname $0`
 
-wget http://ceph.com/qa/ffsb.tar.bz2
+wget http://download.ceph.com/qa/ffsb.tar.bz2
 tar jxvf ffsb.tar.bz2
 cd ffsb-*
 ./configure

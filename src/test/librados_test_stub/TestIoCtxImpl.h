@@ -4,11 +4,14 @@
 #ifndef CEPH_TEST_IO_CTX_IMPL_H
 #define CEPH_TEST_IO_CTX_IMPL_H
 
-#include "include/rados/librados.hpp"
-#include "include/atomic.h"
-#include "common/snap_types.h"
-#include <boost/function.hpp>
 #include <list>
+#include <atomic>
+
+#include <boost/function.hpp>
+
+#include "include/rados/librados.hpp"
+#include "include/Context.h"
+#include "common/snap_types.h"
 
 namespace librados {
 
@@ -29,14 +32,16 @@ public:
 
   ObjectOperations ops;
 private:
-  atomic_t m_refcount;
+  std::atomic<uint64_t> m_refcount = { 0 };
 };
 
 class TestIoCtxImpl {
 public:
+  typedef boost::function<int(TestIoCtxImpl *, const std::string &)> Operation;
+
 
   TestIoCtxImpl();
-  explicit TestIoCtxImpl(TestRadosClient &client, int64_t m_pool_id,
+  explicit TestIoCtxImpl(TestRadosClient *client, int64_t m_pool_id,
                          const std::string& pool_name);
 
   TestRadosClient *get_rados_client() {
@@ -45,6 +50,10 @@ public:
 
   void get();
   void put();
+
+  inline int64_t get_pool_id() const {
+    return m_pool_id;
+  }
 
   virtual TestIoCtxImpl *clone() = 0;
 
@@ -56,12 +65,17 @@ public:
     return m_snap_seq;
   }
 
+  inline void set_snap_context(const SnapContext& snapc) {
+    m_snapc = snapc;
+  }
   const SnapContext &get_snap_context() const {
     return m_snapc;
   }
 
   virtual int aio_flush();
   virtual void aio_flush_async(AioCompletionImpl *c);
+  virtual void aio_notify(const std::string& oid, AioCompletionImpl *c,
+                          bufferlist& bl, uint64_t timeout_ms, bufferlist *pbl);
   virtual int aio_operate(const std::string& oid, TestObjectOperationImpl &ops,
                           AioCompletionImpl *c, SnapContext *snap_context,
                           int flags);
@@ -69,11 +83,15 @@ public:
                                AioCompletionImpl *c, int flags,
                                bufferlist *pbl);
   virtual int aio_remove(const std::string& oid, AioCompletionImpl *c) = 0;
-
+  virtual int aio_watch(const std::string& o, AioCompletionImpl *c,
+                        uint64_t *handle, librados::WatchCtx2 *ctx);
+  virtual int aio_unwatch(uint64_t handle, AioCompletionImpl *c);
+  virtual int append(const std::string& oid, const bufferlist &bl,
+                     const SnapContext &snapc) = 0;
   virtual int assert_exists(const std::string &oid) = 0;
 
   virtual int create(const std::string& oid, bool exclusive) = 0;
-  virtual int exec(const std::string& oid, TestClassHandler &handler,
+  virtual int exec(const std::string& oid, TestClassHandler *handler,
                    const char *cls, const char *method,
                    bufferlist& inbl, bufferlist* outbl,
                    const SnapContext &snapc);
@@ -89,6 +107,12 @@ public:
                             const std::string &filter_prefix,
                             uint64_t max_return,
                             std::map<std::string, bufferlist> *out_vals) = 0;
+  virtual int omap_get_vals2(const std::string& oid,
+                            const std::string& start_after,
+                            const std::string &filter_prefix,
+                            uint64_t max_return,
+                            std::map<std::string, bufferlist> *out_vals,
+                            bool *pmore) = 0;
   virtual int omap_rm_keys(const std::string& oid,
                            const std::set<std::string>& keys) = 0;
   virtual int omap_set(const std::string& oid,
@@ -98,9 +122,13 @@ public:
                            bufferlist *pbl);
   virtual int read(const std::string& oid, size_t len, uint64_t off,
                    bufferlist *bl) = 0;
-  virtual int remove(const std::string& oid) = 0;
+  virtual int remove(const std::string& oid, const SnapContext &snapc) = 0;
   virtual int selfmanaged_snap_create(uint64_t *snapid) = 0;
+  virtual void aio_selfmanaged_snap_create(uint64_t *snapid,
+                                           AioCompletionImpl *c);
   virtual int selfmanaged_snap_remove(uint64_t snapid) = 0;
+  virtual void aio_selfmanaged_snap_remove(uint64_t snapid,
+                                           AioCompletionImpl *c);
   virtual int selfmanaged_snap_rollback(const std::string& oid,
                                         uint64_t snapid) = 0;
   virtual int selfmanaged_snap_set_write_ctx(snap_t seq,
@@ -113,7 +141,8 @@ public:
                           std::map<uint64_t,uint64_t> *m,
                           bufferlist *data_bl) = 0;
   virtual int stat(const std::string& oid, uint64_t *psize, time_t *pmtime) = 0;
-  virtual int truncate(const std::string& oid, uint64_t size) = 0;
+  virtual int truncate(const std::string& oid, uint64_t size,
+                       const SnapContext &snapc) = 0;
   virtual int tmap_update(const std::string& oid, bufferlist& cmdbl);
   virtual int unwatch(uint64_t handle);
   virtual int watch(const std::string& o, uint64_t *handle,
@@ -122,11 +151,18 @@ public:
                     uint64_t off, const SnapContext &snapc) = 0;
   virtual int write_full(const std::string& oid, bufferlist& bl,
                          const SnapContext &snapc) = 0;
+  virtual int writesame(const std::string& oid, bufferlist& bl, size_t len,
+                        uint64_t off, const SnapContext &snapc) = 0;
+  virtual int cmpext(const std::string& oid, uint64_t off, bufferlist& cmp_bl) = 0;
   virtual int xattr_get(const std::string& oid,
                         std::map<std::string, bufferlist>* attrset) = 0;
   virtual int xattr_set(const std::string& oid, const std::string &name,
                         bufferlist& bl) = 0;
-  virtual int zero(const std::string& oid, uint64_t off, uint64_t len) = 0;
+  virtual int zero(const std::string& oid, uint64_t off, uint64_t len,
+                   const SnapContext &snapc) = 0;
+
+  int execute_operation(const std::string& oid,
+                        const Operation &operation);
 
 protected:
   TestIoCtxImpl(const TestIoCtxImpl& rhs);
@@ -137,14 +173,26 @@ protected:
                              bufferlist *pbl, const SnapContext &snapc);
 
 private:
+  struct C_AioNotify : public Context {
+    TestIoCtxImpl *io_ctx;
+    AioCompletionImpl *aio_comp;
+    C_AioNotify(TestIoCtxImpl *_io_ctx, AioCompletionImpl *_aio_comp)
+      : io_ctx(_io_ctx), aio_comp(_aio_comp) {
+    }
+    void finish(int r) override {
+      io_ctx->handle_aio_notify_complete(aio_comp, r);
+    }
+  };
 
   TestRadosClient *m_client;
   int64_t m_pool_id;
   std::string m_pool_name;
   snap_t m_snap_seq;
   SnapContext m_snapc;
-  atomic_t m_refcount;
+  std::atomic<uint64_t> m_refcount = { 0 };
+  std::atomic<uint64_t> m_pending_ops = { 0 };
 
+  void handle_aio_notify_complete(AioCompletionImpl *aio_comp, int r);
 };
 
 } // namespace librados

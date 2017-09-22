@@ -6,17 +6,12 @@
 
 #include <map>
 #include <string>
-#include <iostream>
+#include <iosfwd>
 #include <include/types.h>
-
-#include <expat.h>
 
 #include "include/str_list.h"
 #include "rgw_xml.h"
 #include "rgw_acl.h"
-
-
-using namespace std;
 
 class RGWRados;
 
@@ -24,9 +19,9 @@ class ACLPermission_S3 : public ACLPermission, public XMLObj
 {
 public:
   ACLPermission_S3() {}
-  ~ACLPermission_S3() {}
+  ~ACLPermission_S3() override {}
 
-  bool xml_end(const char *el);
+  bool xml_end(const char *el) override;
   void to_xml(ostream& out);
 };
 
@@ -34,7 +29,7 @@ class ACLGrantee_S3 : public ACLGrantee, public XMLObj
 {
 public:
   ACLGrantee_S3() {}
-  ~ACLGrantee_S3() {}
+  ~ACLGrantee_S3() override {}
 
   bool xml_start(const char *el, const char **attr);
 };
@@ -44,10 +39,10 @@ class ACLGrant_S3 : public ACLGrant, public XMLObj
 {
 public:
   ACLGrant_S3() {}
-  ~ACLGrant_S3() {}
+  ~ACLGrant_S3() override {}
 
   void to_xml(CephContext *cct, ostream& out);
-  bool xml_end(const char *el);
+  bool xml_end(const char *el) override;
   bool xml_start(const char *el, const char **attr);
 
   static ACLGroupTypeEnum uri_to_group(string& uri);
@@ -57,19 +52,11 @@ public:
 class RGWAccessControlList_S3 : public RGWAccessControlList, public XMLObj
 {
 public:
-  RGWAccessControlList_S3(CephContext *_cct) : RGWAccessControlList(_cct) {}
-  ~RGWAccessControlList_S3() {}
+  explicit RGWAccessControlList_S3(CephContext *_cct) : RGWAccessControlList(_cct) {}
+  ~RGWAccessControlList_S3() override {}
 
-  bool xml_end(const char *el);
-  void to_xml(ostream& out) {
-    multimap<string, ACLGrant>::iterator iter;
-    out << "<AccessControlList>";
-    for (iter = grant_map.begin(); iter != grant_map.end(); ++iter) {
-      ACLGrant_S3& grant = static_cast<ACLGrant_S3 &>(iter->second);
-      grant.to_xml(cct, out);
-    }
-    out << "</AccessControlList>";
-  }
+  bool xml_end(const char *el) override;
+  void to_xml(ostream& out);
 
   int create_canned(ACLOwner& owner, ACLOwner& bucket_owner, const string& canned_acl);
   int create_from_grants(std::list<ACLGrant>& grants);
@@ -79,17 +66,10 @@ class ACLOwner_S3 : public ACLOwner, public XMLObj
 {
 public:
   ACLOwner_S3() {}
-  ~ACLOwner_S3() {}
+  ~ACLOwner_S3() override {}
 
-  bool xml_end(const char *el);
-  void to_xml(ostream& out) {
-    if (id.empty())
-      return;
-    out << "<Owner>" << "<ID>" << id << "</ID>";
-    if (!display_name.empty())
-      out << "<DisplayName>" << display_name << "</DisplayName>";
-    out << "</Owner>";
-  }
+  bool xml_end(const char *el) override;
+  void to_xml(ostream& out);
 };
 
 class RGWEnv;
@@ -97,21 +77,14 @@ class RGWEnv;
 class RGWAccessControlPolicy_S3 : public RGWAccessControlPolicy, public XMLObj
 {
 public:
-  RGWAccessControlPolicy_S3(CephContext *_cct) : RGWAccessControlPolicy(_cct) {}
-  ~RGWAccessControlPolicy_S3() {}
+  explicit RGWAccessControlPolicy_S3(CephContext *_cct) : RGWAccessControlPolicy(_cct) {}
+  ~RGWAccessControlPolicy_S3() override {}
 
-  bool xml_end(const char *el);
+  bool xml_end(const char *el) override;
 
-  void to_xml(ostream& out) {
-    out << "<AccessControlPolicy xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">";
-    ACLOwner_S3& _owner = static_cast<ACLOwner_S3 &>(owner);
-    RGWAccessControlList_S3& _acl = static_cast<RGWAccessControlList_S3 &>(acl);
-    _owner.to_xml(out);
-    _acl.to_xml(out);
-    out << "</AccessControlPolicy>";
-  }
+  void to_xml(ostream& out);
   int rebuild(RGWRados *store, ACLOwner *owner, RGWAccessControlPolicy& dest);
-  bool compare_group_name(string& id, ACLGroupTypeEnum group);
+  bool compare_group_name(string& id, ACLGroupTypeEnum group) override;
 
   virtual int create_canned(ACLOwner& _owner, ACLOwner& bucket_owner, string canned_acl) {
     RGWAccessControlList_S3& _acl = static_cast<RGWAccessControlList_S3 &>(acl);
@@ -119,7 +92,7 @@ public:
     owner = _owner;
     return ret;
   }
-  int create_from_headers(RGWRados *store, RGWEnv *env, ACLOwner& _owner);
+  int create_from_headers(RGWRados *store, const RGWEnv *env, ACLOwner& _owner);
 };
 
 /**
@@ -130,9 +103,9 @@ class RGWACLXMLParser_S3 : public RGWXMLParser
 {
   CephContext *cct;
 
-  XMLObj *alloc_obj(const char *el);
+  XMLObj *alloc_obj(const char *el) override;
 public:
-  RGWACLXMLParser_S3(CephContext *_cct) : cct(_cct) {}
+  explicit RGWACLXMLParser_S3(CephContext *_cct) : cct(_cct) {}
 };
 
 #endif

@@ -27,7 +27,7 @@ observed.::
         $ ceph osd erasure-code-profile set LRCprofile \
              plugin=lrc \
              k=4 m=2 l=3 \
-             ruleset-failure-domain=host
+             crush-failure-domain=host
         $ ceph osd pool create lrcpool 12 12 erasure LRCprofile
 
 
@@ -40,8 +40,8 @@ OSD is in the same rack as the lost chunk.::
         $ ceph osd erasure-code-profile set LRCprofile \
              plugin=lrc \
              k=4 m=2 l=3 \
-             ruleset-locality=rack \
-             ruleset-failure-domain=host
+             crush-locality=rack \
+             crush-failure-domain=host
         $ ceph osd pool create lrcpool 12 12 erasure LRCprofile
 
 
@@ -55,9 +55,10 @@ To create a new lrc erasure code profile::
              k={data-chunks} \
              m={coding-chunks} \
              l={locality} \
-             [ruleset-root={root}] \
-             [ruleset-locality={bucket-type}] \
-             [ruleset-failure-domain={bucket-type}] \
+             [crush-root={root}] \
+             [crush-locality={bucket-type}] \
+             [crush-failure-domain={bucket-type}] \
+             [crush-device-class={device-class}] \
              [directory={directory}] \
              [--force]
 
@@ -94,7 +95,7 @@ Where:
 :Required: Yes.
 :Example: 3
 
-``ruleset-root={root}``
+``crush-root={root}``
 
 :Description: The name of the crush bucket used for the first step of
               the ruleset. For intance **step take default**.
@@ -103,7 +104,7 @@ Where:
 :Required: No.
 :Default: default
 
-``ruleset-locality={bucket-type}``
+``crush-locality={bucket-type}``
 
 :Description: The type of the crush bucket in which each set of chunks
               defined by **l** will be stored. For instance, if it is
@@ -115,7 +116,7 @@ Where:
 :Type: String
 :Required: No.
 
-``ruleset-failure-domain={bucket-type}``
+``crush-failure-domain={bucket-type}``
 
 :Description: Ensure that no two chunks are in a bucket with the same
               failure domain. For instance, if the failure domain is
@@ -126,6 +127,16 @@ Where:
 :Type: String
 :Required: No.
 :Default: host
+
+``crush-device-class={device-class}``
+
+:Description: Restrict placement to devices of a specific class (e.g.,
+              ``ssd`` or ``hdd``), using the crush device class names
+              in the CRUSH map.
+
+:Type: String
+:Required: No.
+:Default:
 
 ``directory={directory}``
 
@@ -168,7 +179,7 @@ For instance, when three coding steps are described as::
 
 where *c* are coding chunks calculated from the data chunks *D*, the
 loss of chunk *7* can be recovered with the last four chunks. And the
-loss of chun *2* chunk can be recovered with the first four
+loss of chunk *2* chunk can be recovered with the first four
 chunks.
 
 Erasure code profile examples using low level configuration
@@ -220,7 +231,7 @@ OSD is in the same rack as the lost chunk.::
                        [ "cDDD____", "" ],
                        [ "____cDDD", "" ],
                      ]' \
-             ruleset-steps='[
+             crush-steps='[
                              [ "choose", "rack", 2 ],
                              [ "chooseleaf", "host", 4 ],
                             ]'
@@ -272,7 +283,7 @@ are applied in order. For instance, if a 4K object is encoded, it will
 first go thru *step 1* and be divided in four 1K chunks (the four
 uppercase D). They are stored in the chunks 2, 3, 6 and 7, in
 order. From these, two coding chunks are calculated (the two lowercase
-c). The coding chunks are stored in the chunks 1 and 4, respectively.
+c). The coding chunks are stored in the chunks 1 and 5, respectively.
 
 The *step 2* re-uses the content created by *step 1* in a similar
 fashion and stores a single coding chunk *c* at position 0. The last four
@@ -300,7 +311,7 @@ The coding chunk from *step 2*, stored in chunk *0*, allows it to
 recover the content of chunk *2*. There are no more chunks to recover
 and the process stops, without considering *step 1*.
 
-Recovering chunk *2* required reading chunks *0, 1, 3* and writing
+Recovering chunk *2* requires reading chunks *0, 1, 3* and writing
 back chunk *2*.
 
 If chunk *2, 3, 6* are lost::
@@ -311,7 +322,7 @@ If chunk *2, 3, 6* are lost::
    step 2      cD  __ _
    step 3      __  cD D
 
-The *step 3* can recover the conten of chunk *6*::
+The *step 3* can recover the content of chunk *6*::
 
    chunk nr    01234567
 
@@ -351,10 +362,10 @@ racks.
 
 For instance::
 
-   ruleset-steps='[ [ "choose", "rack", 2 ], [ "chooseleaf", "host", 4 ] ]'
+   crush-steps='[ [ "choose", "rack", 2 ], [ "chooseleaf", "host", 4 ] ]'
 
 will create a ruleset that will select two crush buckets of type
 *rack* and for each of them choose four OSDs, each of them located in
-different bucket of type *host*.
+different buckets of type *host*.
 
 The ruleset can also be manually crafted for finer control.

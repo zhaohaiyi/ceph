@@ -28,6 +28,7 @@
 #include "common/errno.h"
 #include "include/buffer.h"
 #include "include/stringify.h"
+#include "include/util.h"
 
 #include "messages/MLog.h"
 #include "msg/Messenger.h"
@@ -47,12 +48,11 @@
 #include "RadosClient.h"
 
 #include "include/assert.h"
+#include "common/EventTrace.h"
 
 #define dout_subsys ceph_subsys_rados
 #undef dout_prefix
 #define dout_prefix *_dout << "librados: "
-
-static atomic_t rados_instance;
 
 bool librados::RadosClient::ms_get_authorizer(int dest_type,
 					      AuthAuthorizer **authorizer,
@@ -61,23 +61,25 @@ bool librados::RadosClient::ms_get_authorizer(int dest_type,
   /* monitor authorization is being handled on different layer */
   if (dest_type == CEPH_ENTITY_TYPE_MON)
     return true;
-  *authorizer = monclient.auth->build_authorizer(dest_type);
+  *authorizer = monclient.build_authorizer(dest_type);
   return *authorizer != NULL;
 }
 
 librados::RadosClient::RadosClient(CephContext *cct_)
   : Dispatcher(cct_->get()),
+    cct_deleter{cct_, [](CephContext *p) {p->put();}},
     conf(cct_->_conf),
     state(DISCONNECTED),
     monclient(cct_),
+    mgrclient(cct_, nullptr),
     messenger(NULL),
     instance_id(0),
     objecter(NULL),
     lock("librados::RadosClient::lock"),
     timer(cct, lock),
     refcnt(1),
-    log_last_version(0), log_cb(NULL), log_cb_arg(NULL),
-    finisher(cct)
+    log_last_version(0), log_cb(NULL), log_cb2(NULL), log_cb_arg(NULL),
+    finisher(cct, "radosclient", "fn-radosclient")
 {
 }
 
@@ -88,54 +90,101 @@ int64_t librados::RadosClient::lookup_pool(const char *name)
     return r;
   }
 
-  const OSDMap *osdmap = objecter->get_osdmap_read();
-  int64_t ret = osdmap->lookup_pg_pool_name(name);
-  objecter->put_osdmap_read();
+  int64_t ret = objecter->with_osdmap(std::mem_fn(&OSDMap::lookup_pg_pool_name),
+                                 name);
+  if (-ENOENT == ret) {
+    // Make sure we have the latest map
+    int r = wait_for_latest_osdmap();
+    if (r < 0)
+      return r;
+    ret = objecter->with_osdmap(std::mem_fn(&OSDMap::lookup_pg_pool_name),
+                                 name);
+  }
+
   return ret;
 }
 
 bool librados::RadosClient::pool_requires_alignment(int64_t pool_id)
 {
+  bool requires;
+  int r = pool_requires_alignment2(pool_id, &requires);
+  if (r < 0) {
+    // Cast answer to false, this is a little bit problematic
+    // since we really don't know the answer yet, say.
+    return false;
+  }
+
+  return requires;
+}
+
+// a safer version of pool_requires_alignment
+int librados::RadosClient::pool_requires_alignment2(int64_t pool_id,
+						    bool *requires)
+{
+  if (!requires)
+    return -EINVAL;
+
   int r = wait_for_osdmap();
   if (r < 0) {
     return r;
   }
 
-  const OSDMap *osdmap = objecter->get_osdmap_read();
-  bool ret = osdmap->have_pg_pool(pool_id) &&
-    osdmap->get_pg_pool(pool_id)->requires_aligned_append();
-  objecter->put_osdmap_read();
-  return ret;
+  return objecter->with_osdmap([requires, pool_id](const OSDMap& o) {
+      if (!o.have_pg_pool(pool_id)) {
+	return -ENOENT;
+      }
+      *requires = o.get_pg_pool(pool_id)->requires_aligned_append();
+      return 0;
+    });
 }
 
 uint64_t librados::RadosClient::pool_required_alignment(int64_t pool_id)
 {
+  uint64_t alignment;
+  int r = pool_required_alignment2(pool_id, &alignment);
+  if (r < 0) {
+    return 0;
+  }
+
+  return alignment;
+}
+
+// a safer version of pool_required_alignment
+int librados::RadosClient::pool_required_alignment2(int64_t pool_id,
+						    uint64_t *alignment)
+{
+  if (!alignment)
+    return -EINVAL;
+
   int r = wait_for_osdmap();
   if (r < 0) {
     return r;
   }
 
-  const OSDMap *osdmap = objecter->get_osdmap_read();
-  uint64_t ret = osdmap->have_pg_pool(pool_id) ?
-    osdmap->get_pg_pool(pool_id)->required_alignment() : 0;
-  objecter->put_osdmap_read();
-  return ret;
+  return objecter->with_osdmap([alignment, pool_id](const OSDMap &o) {
+      if (!o.have_pg_pool(pool_id)) {
+	return -ENOENT;
+      }
+      *alignment = o.get_pg_pool(pool_id)->required_alignment();
+      return 0;
+    });
 }
 
-int librados::RadosClient::pool_get_auid(uint64_t pool_id, unsigned long long *auid)
+int librados::RadosClient::pool_get_auid(uint64_t pool_id,
+					 unsigned long long *auid)
 {
   int r = wait_for_osdmap();
   if (r < 0)
     return r;
-  const OSDMap *osdmap = objecter->get_osdmap_read();
-  const pg_pool_t *pg = osdmap->get_pg_pool(pool_id);
-  if (!pg) {
-    r = -ENOENT;
-  } else {
-    r = 0;
-    *auid = pg->auid;
-  }
-  objecter->put_osdmap_read();
+  objecter->with_osdmap([&](const OSDMap& o) {
+      const pg_pool_t *pg = o.get_pg_pool(pool_id);
+      if (!pg) {
+	r = -ENOENT;
+      } else {
+	r = 0;
+	*auid = pg->auid;
+      }
+    });
   return r;
 }
 
@@ -144,14 +193,14 @@ int librados::RadosClient::pool_get_name(uint64_t pool_id, std::string *s)
   int r = wait_for_osdmap();
   if (r < 0)
     return r;
-  const OSDMap *osdmap = objecter->get_osdmap_read();
-  if (!osdmap->have_pg_pool(pool_id)) {
-    r = -ENOENT;
-  } else {
-    r = 0;
-    *s = osdmap->get_pool_name(pool_id);
-  }
-  objecter->put_osdmap_read();
+  objecter->with_osdmap([&](const OSDMap& o) {
+      if (!o.have_pg_pool(pool_id)) {
+	r = -ENOENT;
+      } else {
+	r = 0;
+	*s = o.get_pool_name(pool_id);
+      }
+    });
   return r;
 }
 
@@ -191,7 +240,6 @@ int librados::RadosClient::connect()
   common_init_finish(cct);
 
   int err;
-  uint64_t nonce;
 
   // already connected?
   if (state == CONNECTING)
@@ -206,22 +254,19 @@ int librados::RadosClient::connect()
     goto out;
 
   err = -ENOMEM;
-  nonce = getpid() + (1000000 * (uint64_t)rados_instance.inc());
-  messenger = Messenger::create(cct, cct->_conf->ms_type, entity_name_t::CLIENT(-1),
-				"radosclient", nonce);
+  messenger = Messenger::create_client_messenger(cct, "radosclient");
   if (!messenger)
     goto out;
 
   // require OSDREPLYMUX feature.  this means we will fail to talk to
   // old servers.  this is necessary because otherwise we won't know
-  // how to decompose the reply data into its consituent pieces.
-  messenger->set_default_policy(Messenger::Policy::lossy_client(0, CEPH_FEATURE_OSDREPLYMUX));
+  // how to decompose the reply data into its constituent pieces.
+  messenger->set_default_policy(Messenger::Policy::lossy_client(CEPH_FEATURE_OSDREPLYMUX));
 
   ldout(cct, 1) << "starting msgr at " << messenger->get_myaddr() << dendl;
 
   ldout(cct, 1) << "starting objecter" << dendl;
 
-  err = -ENOMEM;
   objecter = new (std::nothrow) Objecter(cct, messenger, &monclient,
 			  &finisher,
 			  cct->_conf->rados_mon_op_timeout,
@@ -231,15 +276,18 @@ int librados::RadosClient::connect()
   objecter->set_balanced_budget();
 
   monclient.set_messenger(messenger);
+  mgrclient.set_messenger(messenger);
 
   objecter->init();
+  messenger->add_dispatcher_head(&mgrclient);
   messenger->add_dispatcher_tail(objecter);
   messenger->add_dispatcher_tail(this);
 
   messenger->start();
 
   ldout(cct, 1) << "setting wanted keys" << dendl;
-  monclient.set_want_keys(CEPH_ENTITY_TYPE_MON | CEPH_ENTITY_TYPE_OSD);
+  monclient.set_want_keys(
+      CEPH_ENTITY_TYPE_MON | CEPH_ENTITY_TYPE_OSD | CEPH_ENTITY_TYPE_MGR);
   ldout(cct, 1) << "calling monclient init" << dendl;
   err = monclient.init();
   if (err) {
@@ -256,13 +304,23 @@ int librados::RadosClient::connect()
   }
   messenger->set_myname(entity_name_t::CLIENT(monclient.get_global_id()));
 
+  // MgrClient needs this (it doesn't have MonClient reference itself)
+  monclient.sub_want("mgrmap", 0, 0);
+  monclient.renew_subs();
+
+  if (service_daemon) {
+    ldout(cct, 10) << __func__ << " registering as " << service_name << "."
+		   << daemon_name << dendl;
+    mgrclient.service_daemon_register(service_name, daemon_name,
+				      daemon_metadata);
+  }
+  mgrclient.init();
+
   objecter->set_client_incarnation(0);
   objecter->start();
   lock.Lock();
 
   timer.init();
-
-  monclient.renew_subs();
 
   finisher.start();
 
@@ -270,8 +328,6 @@ int librados::RadosClient::connect()
   instance_id = monclient.get_global_id();
 
   lock.Unlock();
-
-  cct->_conf->call_all_observers();
 
   ldout(cct, 1) << "init done" << dendl;
   err = 0;
@@ -300,22 +356,29 @@ void librados::RadosClient::shutdown()
     lock.Unlock();
     return;
   }
-  if (state == CONNECTED) {
-    finisher.stop();
-  }
+
   bool need_objecter = false;
-  if (objecter && objecter->initialized.read()) {
+  if (objecter && objecter->initialized) {
     need_objecter = true;
+  }
+
+  if (state == CONNECTED) {
+    if (need_objecter) {
+      // make sure watch callbacks are flushed
+      watch_flush();
+    }
+    finisher.wait_for_empty();
+    finisher.stop();
   }
   state = DISCONNECTED;
   instance_id = 0;
   timer.shutdown();   // will drop+retake lock
   lock.Unlock();
   if (need_objecter) {
-    // make sure watch callbacks are flushed
-    watch_flush();
     objecter->shutdown();
   }
+  mgrclient.shutdown();
+
   monclient.shutdown();
   if (messenger) {
     messenger->shutdown();
@@ -327,7 +390,48 @@ void librados::RadosClient::shutdown()
 int librados::RadosClient::watch_flush()
 {
   ldout(cct, 10) << __func__ << " enter" << dendl;
-  objecter->linger_callback_flush();
+  Mutex mylock("RadosClient::watch_flush::mylock");
+  Cond cond;
+  bool done;
+  objecter->linger_callback_flush(new C_SafeCond(&mylock, &cond, &done));
+
+  mylock.Lock();
+  while (!done)
+    cond.Wait(mylock);
+  mylock.Unlock();
+
+  ldout(cct, 10) << __func__ << " exit" << dendl;
+  return 0;
+}
+
+struct C_aio_watch_flush_Complete : public Context {
+  librados::RadosClient *client;
+  librados::AioCompletionImpl *c;
+
+  C_aio_watch_flush_Complete(librados::RadosClient *_client, librados::AioCompletionImpl *_c)
+    : client(_client), c(_c) {
+    c->get();
+  }
+
+  void finish(int r) override {
+    c->lock.Lock();
+    c->rval = r;
+    c->complete = true;
+    c->cond.Signal();
+
+    if (c->callback_complete ||
+	c->callback_safe) {
+      client->finisher.queue(new librados::C_AioComplete(c));
+    }
+    c->put_unlock();
+  }
+};
+
+int librados::RadosClient::async_watch_flush(AioCompletionImpl *c)
+{
+  ldout(cct, 10) << __func__ << " enter" << dendl;
+  Context *oncomplete = new C_aio_watch_flush_Complete(this, c);
+  objecter->linger_callback_flush(oncomplete);
   ldout(cct, 10) << __func__ << " exit" << dendl;
   return 0;
 }
@@ -343,7 +447,6 @@ librados::RadosClient::~RadosClient()
     delete messenger;
   if (objecter)
     delete objecter;
-  cct->put();
   cct = NULL;
 }
 
@@ -351,15 +454,7 @@ int librados::RadosClient::create_ioctx(const char *name, IoCtxImpl **io)
 {
   int64_t poolid = lookup_pool(name);
   if (poolid < 0) {
-    // Make sure we have the latest map
-    int r = wait_for_latest_osdmap();
-    if (r < 0)
-      return r;
-
-    poolid = lookup_pool(name);
-    if (poolid < 0) {
-      return (int)poolid;
-    }
+    return (int)poolid;
   }
 
   *io = new librados::IoCtxImpl(this, objecter, poolid, CEPH_NOSNAP);
@@ -376,6 +471,7 @@ bool librados::RadosClient::ms_dispatch(Message *m)
 {
   bool ret;
 
+  Mutex::Locker l(lock);
   if (state == DISCONNECTED) {
     ldout(cct, 10) << "disconnected, discarding " << *m << dendl;
     m->put();
@@ -399,19 +495,23 @@ void librados::RadosClient::ms_handle_remote_reset(Connection *con)
 {
 }
 
+bool librados::RadosClient::ms_handle_refused(Connection *con)
+{
+  return false;
+}
 
 bool librados::RadosClient::_dispatch(Message *m)
 {
+  assert(lock.is_locked());
   switch (m->get_type()) {
   // OSD
   case CEPH_MSG_OSD_MAP:
-    lock.Lock();
     cond.Signal();
-    lock.Unlock();
     m->put();
     break;
 
   case CEPH_MSG_MDS_MAP:
+    m->put();
     break;
 
   case MSG_LOG:
@@ -435,11 +535,11 @@ int librados::RadosClient::wait_for_osdmap()
   }
 
   bool need_map = false;
-  const OSDMap *osdmap = objecter->get_osdmap_read();
-  if (osdmap->get_epoch() == 0) {
-    need_map = true;
-  }
-  objecter->put_osdmap_read();
+  objecter->with_osdmap([&](const OSDMap& o) {
+      if (o.get_epoch() == 0) {
+        need_map = true;
+      }
+    });
 
   if (need_map) {
     Mutex::Locker l(lock);
@@ -448,23 +548,24 @@ int librados::RadosClient::wait_for_osdmap()
     if (cct->_conf->rados_mon_op_timeout > 0)
       timeout.set_from_double(cct->_conf->rados_mon_op_timeout);
 
-    const OSDMap *osdmap = objecter->get_osdmap_read();
-    if (osdmap->get_epoch() == 0) {
+    if (objecter->with_osdmap(std::mem_fn(&OSDMap::get_epoch)) == 0) {
       ldout(cct, 10) << __func__ << " waiting" << dendl;
-      utime_t start = ceph_clock_now(cct);
-      while (osdmap->get_epoch() == 0) {
-        objecter->put_osdmap_read();
-        cond.WaitInterval(cct, lock, timeout);
-        utime_t elapsed = ceph_clock_now(cct) - start;
-        if (!timeout.is_zero() && elapsed > timeout) {
-          lderr(cct) << "timed out waiting for first osdmap from monitors" << dendl;
-          return -ETIMEDOUT;
+      utime_t start = ceph_clock_now();
+      while (objecter->with_osdmap(std::mem_fn(&OSDMap::get_epoch)) == 0) {
+        if (timeout.is_zero()) {
+          cond.Wait(lock);
+        } else {
+          cond.WaitInterval(lock, timeout);
+          utime_t elapsed = ceph_clock_now() - start;
+          if (elapsed > timeout) {
+            lderr(cct) << "timed out waiting for first osdmap from monitors"
+                       << dendl;
+            return -ETIMEDOUT;
+          }
         }
-        osdmap = objecter->get_osdmap_read();
       }
       ldout(cct, 10) << __func__ << " done waiting" << dendl;
     }
-    objecter->put_osdmap_read();
     return 0;
   } else {
     return 0;
@@ -493,12 +594,11 @@ int librados::RadosClient::pool_list(std::list<std::pair<int64_t, string> >& v)
   int r = wait_for_osdmap();
   if (r < 0)
     return r;
-  const OSDMap *osdmap = objecter->get_osdmap_read();
-  for (map<int64_t,pg_pool_t>::const_iterator p = osdmap->get_pools().begin();
-       p != osdmap->get_pools().end();
-       ++p)
-    v.push_back(std::make_pair(p->first, osdmap->get_pool_name(p->first)));
-  objecter->put_osdmap_read();
+
+  objecter->with_osdmap([&](const OSDMap& o) {
+      for (auto p : o.get_pools())
+	v.push_back(std::make_pair(p.first, o.get_pool_name(p.first)));
+    });
   return 0;
 }
 
@@ -521,6 +621,18 @@ int librados::RadosClient::get_pool_stats(std::list<string>& pools,
   return ret;
 }
 
+bool librados::RadosClient::get_pool_is_selfmanaged_snaps_mode(
+  const std::string& pool)
+{
+  bool ret = false;
+  objecter->with_osdmap([&](const OSDMap& osdmap) {
+      int64_t poolid = osdmap.lookup_pg_pool_name(pool);
+      if (poolid >= 0)
+	ret = osdmap.get_pg_pool(poolid)->is_unmanaged_snaps_mode();
+    });
+  return ret;
+}
+
 int librados::RadosClient::get_fs_stats(ceph_statfs& stats)
 {
   Mutex mylock ("RadosClient::get_fs_stats::mylock");
@@ -529,7 +641,8 @@ int librados::RadosClient::get_fs_stats(ceph_statfs& stats)
   int ret = 0;
 
   lock.Lock();
-  objecter->get_fs_stats(stats, new C_SafeCond(&mylock, &cond, &done, &ret));
+  objecter->get_fs_stats(stats, boost::optional<int64_t> (),
+                         new C_SafeCond(&mylock, &cond, &done, &ret));
   lock.Unlock();
 
   mylock.Lock();
@@ -553,7 +666,7 @@ bool librados::RadosClient::put() {
 }
  
 int librados::RadosClient::pool_create(string& name, unsigned long long auid,
-				       __u8 crush_rule)
+				       int16_t crush_rule)
 {
   int r = wait_for_osdmap();
   if (r < 0) {
@@ -580,7 +693,7 @@ int librados::RadosClient::pool_create(string& name, unsigned long long auid,
 
 int librados::RadosClient::pool_create_async(string& name, PoolAsyncCompletionImpl *c,
 					     unsigned long long auid,
-					     __u8 crush_rule)
+					     int16_t crush_rule)
 {
   int r = wait_for_osdmap();
   if (r < 0)
@@ -601,21 +714,19 @@ int librados::RadosClient::pool_get_base_tier(int64_t pool_id, int64_t* base_tie
     return r;
   }
 
-  const OSDMap *osdmap = objecter->get_osdmap_read();
-
-  const pg_pool_t* pool = osdmap->get_pg_pool(pool_id);
-  if (pool) {
-    if (pool->tier_of < 0) {
-      *base_tier = pool_id;
-    } else {
-      *base_tier = pool->tier_of;
-    }
-    r = 0;
-  } else {
-    r = -ENOENT;
-  }
-
-  objecter->put_osdmap_read();
+  objecter->with_osdmap([&](const OSDMap& o) {
+      const pg_pool_t* pool = o.get_pg_pool(pool_id);
+      if (pool) {
+	if (pool->tier_of < 0) {
+	  *base_tier = pool_id;
+	} else {
+	  *base_tier = pool->tier_of;
+	}
+	r = 0;
+      } else {
+	r = -ENOENT;
+      }
+    });
   return r;
 }
 
@@ -686,6 +797,12 @@ int librados::RadosClient::blacklist_add(const string& client_address,
   cmds.push_back(cmd.str());
   bufferlist inbl;
   int r = mon_command(cmds, inbl, NULL, NULL);
+  if (r < 0) {
+    return r;
+  }
+
+  // ensure we have the latest osd map epoch before proceeding
+  r = wait_for_latest_osdmap();
   return r;
 }
 
@@ -693,20 +810,39 @@ int librados::RadosClient::mon_command(const vector<string>& cmd,
 				       const bufferlist &inbl,
 				       bufferlist *outbl, string *outs)
 {
-  Mutex mylock("RadosClient::mon_command::mylock");
-  Cond cond;
-  bool done;
-  int rval;
-  lock.Lock();
-  monclient.start_mon_command(cmd, inbl, outbl, outs,
-			       new C_SafeCond(&mylock, &cond, &done, &rval));
-  lock.Unlock();
-  mylock.Lock();
-  while (!done)
-    cond.Wait(mylock);
-  mylock.Unlock();
-  return rval;
+  C_SaferCond ctx;
+  mon_command_async(cmd, inbl, outbl, outs, &ctx);
+  return ctx.wait();
 }
+
+void librados::RadosClient::mon_command_async(const vector<string>& cmd,
+                                              const bufferlist &inbl,
+                                              bufferlist *outbl, string *outs,
+                                              Context *on_finish)
+{
+  lock.Lock();
+  monclient.start_mon_command(cmd, inbl, outbl, outs, on_finish);
+  lock.Unlock();
+}
+
+int librados::RadosClient::mgr_command(const vector<string>& cmd,
+				       const bufferlist &inbl,
+				       bufferlist *outbl, string *outs)
+{
+  Mutex::Locker l(lock);
+
+  C_SaferCond cond;
+  int r = mgrclient.start_command(cmd, inbl, outbl, outs, &cond);
+  if (r < 0)
+    return r;
+
+  lock.Unlock();
+  r = cond.wait();
+  lock.Lock();
+
+  return r;
+}
+
 
 int librados::RadosClient::mon_command(int rank, const vector<string>& cmd,
 				       const bufferlist &inbl,
@@ -761,11 +897,9 @@ int librados::RadosClient::osd_command(int osd, vector<string>& cmd,
 
   lock.Lock();
   // XXX do anything with tid?
-  int r = objecter->osd_command(osd, cmd, inbl, &tid, poutbl, prs,
-			 new C_SafeCond(&mylock, &cond, &done, &ret));
+  objecter->osd_command(osd, cmd, inbl, &tid, poutbl, prs,
+			new C_SafeCond(&mylock, &cond, &done, &ret));
   lock.Unlock();
-  if (r != 0)
-    return r;
   mylock.Lock();
   while (!done)
     cond.Wait(mylock);
@@ -783,11 +917,9 @@ int librados::RadosClient::pg_command(pg_t pgid, vector<string>& cmd,
   int ret;
   ceph_tid_t tid;
   lock.Lock();
-  int r = objecter->pg_command(pgid, cmd, inbl, &tid, poutbl, prs,
-		        new C_SafeCond(&mylock, &cond, &done, &ret));
+  objecter->pg_command(pgid, cmd, inbl, &tid, poutbl, prs,
+		       new C_SafeCond(&mylock, &cond, &done, &ret));
   lock.Unlock();
-  if (r != 0)
-    return r;
   mylock.Lock();
   while (!done)
     cond.Wait(mylock);
@@ -795,16 +927,25 @@ int librados::RadosClient::pg_command(pg_t pgid, vector<string>& cmd,
   return ret;
 }
 
-int librados::RadosClient::monitor_log(const string& level, rados_log_callback_t cb, void *arg)
+int librados::RadosClient::monitor_log(const string& level,
+				       rados_log_callback_t cb,
+				       rados_log_callback2_t cb2,
+				       void *arg)
 {
   Mutex::Locker l(lock);
 
-  if (cb == NULL) {
+  if (state != CONNECTED) {
+    return -ENOTCONN;
+  }
+
+  if (cb == NULL && cb2 == NULL) {
     // stop watch
-    ldout(cct, 10) << __func__ << " removing cb " << (void*)log_cb << dendl;
+    ldout(cct, 10) << __func__ << " removing cb " << (void*)log_cb
+		   << " " << (void*)log_cb2 << dendl;
     monclient.sub_unwant(log_watch);
     log_watch.clear();
     log_cb = NULL;
+    log_cb2 = NULL;
     log_cb_arg = NULL;
     return 0;
   }
@@ -825,14 +966,17 @@ int librados::RadosClient::monitor_log(const string& level, rados_log_callback_t
     return -EINVAL;
   }
 
-  if (log_cb)
+  if (log_cb || log_cb2)
     monclient.sub_unwant(log_watch);
 
   // (re)start watch
-  ldout(cct, 10) << __func__ << " add cb " << (void*)cb << " level " << level << dendl;
+  ldout(cct, 10) << __func__ << " add cb " << (void*)cb << " " << (void*)cb2
+		 << " level " << level << dendl;
   monclient.sub_want(watch_level, 0, 0);
+
   monclient.renew_subs();
   log_cb = cb;
+  log_cb2 = cb2;
   log_cb_arg = arg;
   log_watch = watch_level;
   return 0;
@@ -840,27 +984,35 @@ int librados::RadosClient::monitor_log(const string& level, rados_log_callback_t
 
 void librados::RadosClient::handle_log(MLog *m)
 {
-  Mutex::Locker l(lock);
+  assert(lock.is_locked());
   ldout(cct, 10) << __func__ << " version " << m->version << dendl;
 
   if (log_last_version < m->version) {
     log_last_version = m->version;
 
-    if (log_cb) {
+    if (log_cb || log_cb2) {
       for (std::deque<LogEntry>::iterator it = m->entries.begin(); it != m->entries.end(); ++it) {
         LogEntry e = *it;
         ostringstream ss;
-        ss << e.stamp << " " << e.who.name << " " << e.prio << " " << e.msg;
+        ss << e.stamp << " " << e.name << " " << e.prio << " " << e.msg;
         string line = ss.str();
         string who = stringify(e.who);
+	string name = stringify(e.name);
         string level = stringify(e.prio);
         struct timespec stamp;
         e.stamp.to_timespec(&stamp);
 
         ldout(cct, 20) << __func__ << " delivering " << ss.str() << dendl;
-        log_cb(log_cb_arg, line.c_str(), who.c_str(),
-               stamp.tv_sec, stamp.tv_nsec,
-               e.seq, level.c_str(), e.msg.c_str());
+	if (log_cb)
+	  log_cb(log_cb_arg, line.c_str(), who.c_str(),
+		 stamp.tv_sec, stamp.tv_nsec,
+		 e.seq, level.c_str(), e.msg.c_str());
+	if (log_cb2)
+	  log_cb2(log_cb_arg, line.c_str(),
+		  e.channel.c_str(),
+		  who.c_str(), name.c_str(),
+		  stamp.tv_sec, stamp.tv_nsec,
+		  e.seq, level.c_str(), e.msg.c_str());
       }
     }
 
@@ -868,4 +1020,57 @@ void librados::RadosClient::handle_log(MLog *m)
   }
 
   m->put();
+}
+
+int librados::RadosClient::service_daemon_register(
+  const std::string& service,  ///< service name (e.g., 'rgw')
+  const std::string& name,     ///< daemon name (e.g., 'gwfoo')
+  const std::map<std::string,std::string>& metadata)
+{
+  if (service_daemon) {
+    return -EEXIST;
+  }
+  if (service == "osd" ||
+      service == "mds" ||
+      service == "client" ||
+      service == "mon" ||
+      service == "mgr") {
+    // normal ceph entity types are not allowed!
+    return -EINVAL;
+  }
+  if (service.empty() || name.empty()) {
+    return -EINVAL;
+  }
+
+  collect_sys_info(&daemon_metadata, cct);
+
+  ldout(cct,10) << __func__ << " " << service << "." << name << dendl;
+  service_daemon = true;
+  service_name = service;
+  daemon_name = name;
+  daemon_metadata.insert(metadata.begin(), metadata.end());
+
+  if (state == DISCONNECTED) {
+    return 0;
+  }
+  if (state == CONNECTING) {
+    return -EBUSY;
+  }
+  mgrclient.service_daemon_register(service_name, daemon_name,
+				    daemon_metadata);
+  return 0;
+}
+
+int librados::RadosClient::service_daemon_update_status(
+  const std::map<std::string,std::string>& status)
+{
+  if (state != CONNECTED) {
+    return -ENOTCONN;
+  }
+  return mgrclient.service_daemon_update_status(status);
+}
+
+mon_feature_t librados::RadosClient::get_required_monitor_features() const
+{
+  return monclient.monmap.get_required_features();
 }

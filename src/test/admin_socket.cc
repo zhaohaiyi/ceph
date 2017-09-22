@@ -12,15 +12,12 @@
  *
  */
 
-#include <gtest/gtest.h>
-
 #include "common/Mutex.h"
 #include "common/Cond.h"
 #include "common/admin_socket.h"
 #include "common/admin_socket_client.h"
 #include "common/ceph_argparse.h"
-#include "global/global_init.h"
-#include "global/global_context.h"
+#include "gtest/gtest.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -30,7 +27,7 @@
 class AdminSocketTest
 {
 public:
-  AdminSocketTest(AdminSocket *asokc)
+  explicit AdminSocketTest(AdminSocket *asokc)
     : m_asokc(asokc)
   {
   }
@@ -48,14 +45,14 @@ public:
 };
 
 TEST(AdminSocket, Teardown) {
-  std::auto_ptr<AdminSocket>
+  std::unique_ptr<AdminSocket>
       asokc(new AdminSocket(g_ceph_context));
   AdminSocketTest asoct(asokc.get());
   ASSERT_EQ(true, asoct.shutdown());
 }
 
 TEST(AdminSocket, TeardownSetup) {
-  std::auto_ptr<AdminSocket>
+  std::unique_ptr<AdminSocket>
       asokc(new AdminSocket(g_ceph_context));
   AdminSocketTest asoct(asokc.get());
   ASSERT_EQ(true, asoct.shutdown());
@@ -64,7 +61,7 @@ TEST(AdminSocket, TeardownSetup) {
 }
 
 TEST(AdminSocket, SendHelp) {
-  std::auto_ptr<AdminSocket>
+  std::unique_ptr<AdminSocket>
       asokc(new AdminSocket(g_ceph_context));
   AdminSocketTest asoct(asokc.get());
   ASSERT_EQ(true, asoct.shutdown());
@@ -96,7 +93,7 @@ TEST(AdminSocket, SendHelp) {
 }
 
 TEST(AdminSocket, SendNoOp) {
-  std::auto_ptr<AdminSocket>
+  std::unique_ptr<AdminSocket>
       asokc(new AdminSocket(g_ceph_context));
   AdminSocketTest asoct(asokc.get());
   ASSERT_EQ(true, asoct.shutdown());
@@ -108,8 +105,22 @@ TEST(AdminSocket, SendNoOp) {
   ASSERT_EQ(true, asoct.shutdown());
 }
 
+TEST(AdminSocket, SendTooLongRequest) {
+  std::unique_ptr<AdminSocket>
+      asokc(new AdminSocket(g_ceph_context));
+  AdminSocketTest asoct(asokc.get());
+  ASSERT_EQ(true, asoct.shutdown());
+  ASSERT_EQ(true, asoct.init(get_rand_socket_path()));
+  AdminSocketClient client(get_rand_socket_path());
+  string version;
+  string request(16384, 'a');
+  //if admin_socket cannot handle it, segfault will happened.
+  ASSERT_NE("", client.do_request(request, &version));
+  ASSERT_EQ(true, asoct.shutdown());
+}
+
 class MyTest : public AdminSocketHook {
-  bool call(std::string command, cmdmap_t& cmdmap, std::string format, bufferlist& result) {
+  bool call(std::string command, cmdmap_t& cmdmap, std::string format, bufferlist& result) override {
     std::vector<std::string> args;
     cmd_getval(g_ceph_context, cmdmap, "args", args);
     result.append(command);
@@ -127,7 +138,7 @@ class MyTest : public AdminSocketHook {
 };
 
 TEST(AdminSocket, RegisterCommand) {
-  std::auto_ptr<AdminSocket>
+  std::unique_ptr<AdminSocket>
       asokc(new AdminSocket(g_ceph_context));
   AdminSocketTest asoct(asokc.get());
   ASSERT_EQ(true, asoct.shutdown());
@@ -141,7 +152,7 @@ TEST(AdminSocket, RegisterCommand) {
 }
 
 class MyTest2 : public AdminSocketHook {
-  bool call(std::string command, cmdmap_t& cmdmap, std::string format, bufferlist& result) {
+  bool call(std::string command, cmdmap_t& cmdmap, std::string format, bufferlist& result) override {
     std::vector<std::string> args;
     cmd_getval(g_ceph_context, cmdmap, "args", args);
     result.append(command);
@@ -159,7 +170,7 @@ class MyTest2 : public AdminSocketHook {
 };
 
 TEST(AdminSocket, RegisterCommandPrefixes) {
-  std::auto_ptr<AdminSocket>
+  std::unique_ptr<AdminSocket>
       asokc(new AdminSocket(g_ceph_context));
   AdminSocketTest asoct(asokc.get());
   ASSERT_EQ(true, asoct.shutdown());
@@ -193,7 +204,7 @@ public:
 
   BlockingHook() : _lock("BlockingHook::_lock") {}
 
-  bool call(std::string command, cmdmap_t& cmdmap, std::string format, bufferlist& result) {
+  bool call(std::string command, cmdmap_t& cmdmap, std::string format, bufferlist& result) override {
     Mutex::Locker l(_lock);
     _cond.Wait(_lock);
     return true;
@@ -202,7 +213,7 @@ public:
 
 TEST(AdminSocketClient, Ping) {
   string path = get_rand_socket_path();
-  std::auto_ptr<AdminSocket>
+  std::unique_ptr<AdminSocket>
       asokc(new AdminSocket(g_ceph_context));
   AdminSocketClient client(path);
   // no socket
@@ -217,7 +228,12 @@ TEST(AdminSocketClient, Ping) {
   {
     bool ok;
     std::string result = client.ping(&ok);
-    EXPECT_NE(std::string::npos, result.find("Connection refused"));
+#if defined(__APPLE__) || defined(__FreeBSD__)
+    const char* errmsg = "Socket operation on non-socket";
+#else
+    const char* errmsg = "Connection refused";
+#endif
+    EXPECT_NE(std::string::npos, result.find(errmsg));
     ASSERT_FALSE(ok);
   }
   // a daemon is connected to the socket
@@ -251,7 +267,7 @@ TEST(AdminSocketClient, Ping) {
 
 TEST(AdminSocket, bind_and_listen) {
   string path = get_rand_socket_path();
-  std::auto_ptr<AdminSocket>
+  std::unique_ptr<AdminSocket>
       asokc(new AdminSocket(g_ceph_context));
 
   AdminSocketTest asoct(asokc.get());
@@ -286,17 +302,6 @@ TEST(AdminSocket, bind_and_listen) {
     EXPECT_NE(std::string::npos, message.find("File exists"));
     ASSERT_TRUE(asoct.shutdown());
   }
-}
-
-int main(int argc, char **argv) {
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
-
-  vector<const char*> def_args;
-  global_init(&def_args, args, CEPH_ENTITY_TYPE_CLIENT, CODE_ENVIRONMENT_UTILITY, 0);
-  common_init_finish(g_ceph_context);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
 }
 
 /*

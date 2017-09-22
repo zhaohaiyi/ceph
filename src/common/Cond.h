@@ -1,4 +1,4 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 /*
  * Ceph - scalable distributed file system
@@ -7,23 +7,16 @@
  *
  * This is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
- * License version 2.1, as published by the Free Software 
+ * License version 2.1, as published by the Free Software
  * Foundation.  See file COPYING.
- * 
+ *
  */
 
 
 #ifndef CEPH_COND_H
 #define CEPH_COND_H
 
-#include <time.h>
-
-#include "Mutex.h"
-#include "Clock.h"
-
 #include "include/Context.h"
-
-#include <pthread.h>
 
 class Cond {
   // my bits
@@ -73,10 +66,25 @@ class Cond {
 
     return r;
   }
-  int WaitInterval(CephContext *cct, Mutex &mutex, utime_t interval) {
-    utime_t when = ceph_clock_now(cct);
+
+  int WaitInterval(Mutex &mutex, utime_t interval) {
+    utime_t when = ceph_clock_now();
     when += interval;
     return WaitUntil(mutex, when);
+  }
+
+  template<typename Duration>
+  int WaitInterval(Mutex &mutex, Duration interval) {
+    ceph::real_time when(ceph::real_clock::now());
+    when += interval;
+
+    struct timespec ts = ceph::real_clock::to_timespec(when);
+
+    mutex._pre_unlock();
+    int r = pthread_cond_timedwait(&_c, &mutex._m, &ts);
+    mutex._post_lock();
+
+    return r;
   }
 
   int SloppySignal() { 
@@ -123,7 +131,7 @@ public:
   C_Cond(Cond *c, bool *d, int *r) : cond(c), done(d), rval(r) {
     *done = false;
   }
-  void finish(int r) {
+  void finish(int r) override {
     *done = true;
     *rval = r;
     cond->Signal();
@@ -146,7 +154,7 @@ public:
   C_SafeCond(Mutex *l, Cond *c, bool *d, int *r=0) : lock(l), cond(c), done(d), rval(r) {
     *done = false;
   }
-  void finish(int r) {
+  void finish(int r) override {
     lock->Lock();
     if (rval)
       *rval = r;
@@ -169,10 +177,10 @@ class C_SaferCond : public Context {
   int rval;      ///< return value
 public:
   C_SaferCond() : lock("C_SaferCond"), done(false), rval(0) {}
-  void finish(int r) { complete(r); }
+  void finish(int r) override { complete(r); }
 
   /// We overload complete in order to not delete the context
-  void complete(int r) {
+  void complete(int r) override {
     Mutex::Locker l(lock);
     done = true;
     rval = r;

@@ -92,7 +92,6 @@ class Transaction {
       switch (op->op) {
       case ObjectStore::Transaction::OP_WRITE:
         {
-          coll_t cid = i.get_cid(op->cid);
           ghobject_t oid = i.get_oid(op->oid);
           bufferlist bl;
           i.decode_bl(bl);
@@ -100,7 +99,6 @@ class Transaction {
         break;
       case ObjectStore::Transaction::OP_SETATTR:
         {
-          coll_t cid = i.get_cid(op->cid);
           ghobject_t oid = i.get_oid(op->oid);
           string name = i.decode_string();
           bufferlist bl;
@@ -111,7 +109,6 @@ class Transaction {
         break;
       case ObjectStore::Transaction::OP_OMAP_SETKEYS:
         {
-          coll_t cid = i.get_cid(op->cid);
           ghobject_t oid = i.get_oid(op->oid);
           map<string, bufferptr> aset;
           i.decode_attrset(aset);
@@ -119,7 +116,6 @@ class Transaction {
         break;
       case ObjectStore::Transaction::OP_OMAP_RMKEYS:
         {
-          coll_t cid = i.get_cid(op->cid);
           ghobject_t oid = i.get_oid(op->oid);
           set<string> keys;
           i.decode_keyset(keys);
@@ -233,8 +229,8 @@ const string PerfCase::info_info_attr("11.40_info");
 const string PerfCase::attr("_");
 const string PerfCase::snapset_attr("snapset");
 const string PerfCase::pglog_attr("pglog_attr");
-const coll_t PerfCase::meta_cid("meta");
-const coll_t PerfCase::cid("meta");
+const coll_t PerfCase::meta_cid;
+const coll_t PerfCase::cid;
 const ghobject_t PerfCase::pglog_oid(hobject_t(sobject_t(object_t("cid_pglog"), 0)));
 const ghobject_t PerfCase::info_oid(hobject_t(sobject_t(object_t("infos"), 0)));
 Transaction::Tick Transaction::write_ticks, Transaction::setattr_ticks, Transaction::omap_setkeys_ticks, Transaction::omap_rmkeys_ticks;
@@ -250,9 +246,11 @@ int main(int argc, char **argv)
   vector<const char*> args;
   argv_to_vec(argc, (const char **)argv, args);
 
-  global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT, CODE_ENVIRONMENT_UTILITY, 0);
+  auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
+			 CODE_ENVIRONMENT_UTILITY, 0);
   common_init_finish(g_ceph_context);
   g_ceph_context->_conf->apply_changes(NULL);
+  Cycles::init();
 
   cerr << "args: " << args << std::endl;
   if (args.size() < 1) {

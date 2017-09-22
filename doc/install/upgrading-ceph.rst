@@ -80,7 +80,7 @@ When upgrading from Argonaut to Bobtail, you need to be aware of several things:
 Ensure that you update package repository paths. For example:: 
 
 	sudo rm /etc/apt/sources.list.d/ceph.list
-	echo deb http://ceph.com/debian-bobtail/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
+	echo deb http://download.ceph.com/debian-bobtail/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
 
 See the following sections for additional details.
 
@@ -115,7 +115,7 @@ follows::
 .. important:: If your cluster already has an ``auth supported`` option defined in
    the configuration file, no changes are necessary.
 
-See `Ceph Authentication - Backward Compatibility`_ for details.
+See `User Management - Backward Compatibility`_ for details.
 
 
 Monitor On-wire Protocol
@@ -162,7 +162,7 @@ Argonaut to Cuttlefish without the intermediate upgrade to Bobtail.
 For example:: 
 
 	sudo rm /etc/apt/sources.list.d/ceph.list
-	echo deb http://ceph.com/debian-bobtail/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
+	echo deb http://download.ceph.com/debian-bobtail/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
 
 We recommend upgrading all monitors to Bobtail before proceeding with the
 upgrade of the monitors to Cuttlefish. A mixture of Bobtail and Argonaut
@@ -175,7 +175,7 @@ extended period of time between ``ceph-mon`` upgrades. See `Upgrading
 Monitors`_ for details.
 
 .. note:: See the `Authentication`_ section and the 
-   `Ceph Authentication - Backward Compatibility`_ for additional information
+   `User Management - Backward Compatibility`_ for additional information
    on authentication backward compatibility settings for Bobtail.
 
 Once you complete the upgrade of your monitors from Argonaut to
@@ -186,7 +186,7 @@ replace the reference to the Bobtail repository with a reference to
 the Cuttlefish repository. For example::
 
 	sudo rm /etc/apt/sources.list.d/ceph.list
-	echo deb http://ceph.com/debian-cuttlefish/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
+	echo deb http://download.ceph.com/debian-cuttlefish/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
 
 See `Upgrading Monitors`_ for details.
 
@@ -210,7 +210,7 @@ Replace any ``apt`` reference to older repositories with a reference to the
 Cuttlefish repository. For example:: 
 
 	sudo rm /etc/apt/sources.list.d/ceph.list
-	echo deb http://ceph.com/debian-cuttlefish/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
+	echo deb http://download.ceph.com/debian-cuttlefish/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
 
 
 Monitor
@@ -259,7 +259,7 @@ Replace any reference to older repositories with a reference to the
 Dumpling repository. For example, with ``apt`` perform the following:: 
 
 	sudo rm /etc/apt/sources.list.d/ceph.list
-	echo deb http://ceph.com/debian-dumpling/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
+	echo deb http://download.ceph.com/debian-dumpling/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
 
 With CentOS/Red Hat distributions, remove the old repository. :: 
 
@@ -271,15 +271,14 @@ Then add a new ``ceph.repo`` repository entry with the following contents.
 
 	[ceph]
 	name=Ceph Packages and Backports $basearch
-	baseurl=http://ceph.com/rpm/el6/$basearch
+	baseurl=http://download.ceph.com/rpm/el6/$basearch
 	enabled=1
 	gpgcheck=1
-	type=rpm-md
-	gpgkey=https://ceph.com/git/?p=ceph.git;a=blob_plain;f=keys/release.asc	
+	gpgkey=https://download.ceph.com/keys/release.asc
 
 
 .. note:: Ensure you use the correct URL for your distribution. Check the
-   http://ceph.com/rpm directory for your distribution. 
+   http://download.ceph.com/rpm directory for your distribution. 
 
 .. note:: Since you can upgrade using ``ceph-deploy`` you will only need to add
    the repository on Ceph Client nodes where you use the ``ceph`` command line 
@@ -296,7 +295,7 @@ Replace any reference to older repositories with a reference to the
 Emperor repository. For example, with ``apt`` perform the following:: 
 
 	sudo rm /etc/apt/sources.list.d/ceph.list
-	echo deb http://ceph.com/debian-emperor/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
+	echo deb http://download.ceph.com/debian-emperor/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
 
 With CentOS/Red Hat distributions, remove the old repository. :: 
 
@@ -309,15 +308,14 @@ replace ``{distro}`` with your distribution (e.g., ``el6``, ``rhel6``, etc).
 
 	[ceph]
 	name=Ceph Packages and Backports $basearch
-	baseurl=http://ceph.com/rpm-emperor/{distro}/$basearch
+	baseurl=http://download.ceph.com/rpm-emperor/{distro}/$basearch
 	enabled=1
 	gpgcheck=1
-	type=rpm-md
-	gpgkey=https://ceph.com/git/?p=ceph.git;a=blob_plain;f=keys/release.asc	
+	gpgkey=https://download.ceph.com/keys/release.asc
 
 
 .. note:: Ensure you use the correct URL for your distribution. Check the
-   http://ceph.com/rpm directory for your distribution. 
+   http://download.ceph.com/rpm directory for your distribution. 
 
 .. note:: Since you can upgrade using ``ceph-deploy`` you will only need to add
    the repository on Ceph Client nodes where you use the ``ceph`` command line 
@@ -339,7 +337,7 @@ you may need to uninstall, auto remove dependencies and reinstall.
 
 See `v0.65`_ for details on the new command line interface.
 
-.. _v0.65: http://ceph.com/docs/master/release-notes/#v0-65
+.. _v0.65: http://docs.ceph.com/docs/master/release-notes/#v0-65
 
 
 Monitor
@@ -411,7 +409,7 @@ you may need to uninstall, auto remove dependencies and reinstall.
 
 See `v0.65`_ for details on the new command line interface.
 
-.. _v0.65: http://ceph.com/docs/master/release-notes/#v0-65
+.. _v0.65: http://docs.ceph.com/docs/master/release-notes/#v0-65
 
 
 Upgrade Sequence
@@ -421,7 +419,7 @@ Replace any reference to older repositories with a reference to the
 Firely repository. For example, with ``apt`` perform the following:: 
 
 	sudo rm /etc/apt/sources.list.d/ceph.list
-	echo deb http://ceph.com/debian-firefly/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
+	echo deb http://download.ceph.com/debian-firefly/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
 
 With CentOS/Red Hat distributions, remove the old repository. :: 
 
@@ -435,11 +433,10 @@ replace ``{distro}`` with your distribution (e.g., ``el6``, ``rhel6``,
 
 	[ceph]
 	name=Ceph Packages and Backports $basearch
-	baseurl=http://ceph.com/rpm-firefly/{distro}/$basearch
+	baseurl=http://download.ceph.com/rpm-firefly/{distro}/$basearch
 	enabled=1
 	gpgcheck=1
-	type=rpm-md
-	gpgkey=https://ceph.com/git/?p=ceph.git;a=blob_plain;f=keys/release.asc	
+	gpgkey=https://download.ceph.com/keys/release.asc
 
 
 Upgrade daemons in the following order:
@@ -494,7 +491,7 @@ Replace any reference to older repositories with a reference to the
 Firefly repository. For example, with ``apt`` perform the following:: 
 
 	sudo rm /etc/apt/sources.list.d/ceph.list
-	echo deb http://ceph.com/debian-firefly/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
+	echo deb http://download.ceph.com/debian-firefly/ $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/ceph.list
 
 With CentOS/Red Hat distributions, remove the old repository. :: 
 
@@ -508,15 +505,14 @@ replace ``{distro}`` with your distribution (e.g., ``el6``, ``rhel6``,
 
 	[ceph]
 	name=Ceph Packages and Backports $basearch
-	baseurl=http://ceph.com/rpm/{distro}/$basearch
+	baseurl=http://download.ceph.com/rpm/{distro}/$basearch
 	enabled=1
 	gpgcheck=1
-	type=rpm-md
-	gpgkey=https://ceph.com/git/?p=ceph.git;a=blob_plain;f=keys/release.asc	
+	gpgkey=https://download.ceph.com/keys/release.asc
 
 
 .. note:: Ensure you use the correct URL for your distribution. Check the
-   http://ceph.com/rpm directory for your distribution. 
+   http://download.ceph.com/rpm directory for your distribution. 
 
 .. note:: Since you can upgrade using ``ceph-deploy`` you will only need to add
    the repository on Ceph Client nodes where you use the ``ceph`` command line 
@@ -561,7 +557,7 @@ To upgrade monitors, perform the following steps:
    For example::
 
 	ceph-deploy install --release {release-name} ceph-node1[ ceph-node2]
-	ceph-deploy install --release dumpling mon1 mon2 mon3
+	ceph-deploy install --release hammer mon1 mon2 mon3
 
    You may also use the package manager for your Linux distribution on 
    each individual node. To upgrade packages manually on each Debian/Ubuntu 
@@ -605,7 +601,7 @@ To upgrade a Ceph OSD Daemon, perform the following steps:
    once. For example::
 
 	ceph-deploy install --release {release-name} ceph-node1[ ceph-node2]
-	ceph-deploy install --release dumpling mon1 mon2 mon3
+	ceph-deploy install --release hammer osd1 osd2 osd3
 
    You may also use the package manager on each node to upgrade packages 
    manually. For Debian/Ubuntu hosts, perform the following steps on each
@@ -650,8 +646,8 @@ To upgrade a Ceph Metadata Server, perform the following steps:
    address all Ceph Metadata Server nodes at once, or use the package manager 
    on each node. For example::
 
-	ceph-deploy install --release {release-name} ceph-node1[ ceph-node2]
-	ceph-deploy install --release dumpling mon1 mon2 mon3
+	ceph-deploy install --release {release-name} ceph-node1
+	ceph-deploy install --release hammer mds1
 
    To upgrade packages manually, perform the following steps on each
    Debian/Ubuntu host. :: 
@@ -742,8 +738,7 @@ Under those directories, the keyring should be in a file named ``keyring``.
 
 .. _Monitor Config Reference: ../../rados/configuration/mon-config-ref
 .. _Joao's blog post: http://ceph.com/dev-notes/cephs-new-monitor-changes 
-.. _Ceph Authentication: ../../rados/operations/authentication/
-.. _Ceph Authentication - Backward Compatibility: ../../rados/operations/authentication/#backward-compatibility
+.. _User Management - Backward Compatibility: ../../rados/configuration/auth-config-ref/#backward-compatibility
 .. _manually: ../install-storage-cluster/
 .. _Operating a Cluster: ../../rados/operations/operating
 .. _Monitoring a Cluster: ../../rados/operations/monitoring

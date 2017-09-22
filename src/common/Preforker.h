@@ -3,18 +3,10 @@
 #ifndef CEPH_COMMON_PREFORKER_H
 #define CEPH_COMMON_PREFORKER_H
 
-#include "acconfig.h"
-#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
-#include <errno.h>
-#include <stdlib.h>
 #include <unistd.h>
-#ifdef WITH_LTTNG
-#include <lttng/ust.h>
-#endif
 #include <sstream>
-#include <string>
 
 #include "include/assert.h"
 #include "common/safe_io.h"
@@ -33,9 +25,6 @@ class Preforker {
   pid_t childpid;
   bool forked;
   int fd[2];  // parent's, child's
-#ifdef WITH_LTTNG
-    sigset_t sigset;
-#endif
 
 public:
   Preforker()
@@ -45,17 +34,13 @@ public:
 
   int prefork(std::string &err) {
     assert(!forked);
-    int r = socketpair(AF_UNIX, SOCK_STREAM, 0, fd);
+    int r = ::socketpair(AF_UNIX, SOCK_STREAM, 0, fd);
     std::ostringstream oss;
     if (r < 0) {
       oss << "[" << getpid() << "]: unable to create socketpair: " << cpp_strerror(errno);
       err = oss.str();
       return r;
     }
-
-#ifdef WITH_LTTNG
-    ust_before_fork(&sigset);
-#endif
 
     forked = true;
 
@@ -66,12 +51,16 @@ public:
       err = oss.str();
       return r;
     }
-    if (childpid == 0) {
-      child_after_fork();
+    if (is_child()) {
+      ::close(fd[0]);
     } else {
-      parent_after_fork();
+      ::close(fd[1]);
     }
     return 0;
+  }
+
+  int get_signal_fd() const {
+    return forked ? fd[1] : 0;
   }
 
   bool is_child() {
@@ -127,7 +116,8 @@ public:
     return r;
   }
   void exit(int r) {
-    signal_exit(r);
+    if (is_child())
+        signal_exit(r);
     ::exit(r);
   }
 
@@ -138,20 +128,6 @@ public:
     r += r2;  // make the compiler shut up about the unused return code from ::write(2).
   }
   
-private:
-  void child_after_fork() {
-#ifdef WITH_LTTNG
-    ust_after_fork_child(&sigset);
-#endif
-    ::close(fd[0]);
-  }
-
-  void parent_after_fork() {
-#ifdef WITH_LTTNG
-    ust_after_fork_parent(&sigset);
-#endif
-    ::close(fd[1]);
-  }
 };
 
 #endif

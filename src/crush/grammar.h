@@ -46,6 +46,7 @@ struct crush_grammar : public grammar<crush_grammar>
     _step_take,
     _step_set_chooseleaf_tries,
     _step_set_chooseleaf_vary_r,
+    _step_set_chooseleaf_stable,
     _step_set_choose_tries,
     _step_set_choose_local_tries,
     _step_set_choose_local_fallback_tries,
@@ -54,6 +55,11 @@ struct crush_grammar : public grammar<crush_grammar>
     _step_emit,
     _step,
     _crushrule,
+    _weight_set_weights,
+    _weight_set,
+    _choose_arg_ids,
+    _choose_arg,
+    _choose_args,
     _crushmap,
     _tunable,
   };
@@ -84,11 +90,17 @@ struct crush_grammar : public grammar<crush_grammar>
     rule<ScannerT, parser_context<>, parser_tag<_step_set_choose_local_fallback_tries> >    step_set_choose_local_fallback_tries;
     rule<ScannerT, parser_context<>, parser_tag<_step_set_chooseleaf_tries> >    step_set_chooseleaf_tries;
     rule<ScannerT, parser_context<>, parser_tag<_step_set_chooseleaf_vary_r> >    step_set_chooseleaf_vary_r;
+    rule<ScannerT, parser_context<>, parser_tag<_step_set_chooseleaf_stable> >    step_set_chooseleaf_stable;
     rule<ScannerT, parser_context<>, parser_tag<_step_choose> >    step_choose;
     rule<ScannerT, parser_context<>, parser_tag<_step_chooseleaf> >      step_chooseleaf;
     rule<ScannerT, parser_context<>, parser_tag<_step_emit> >      step_emit;
     rule<ScannerT, parser_context<>, parser_tag<_step> >      step;
     rule<ScannerT, parser_context<>, parser_tag<_crushrule> >      crushrule;
+    rule<ScannerT, parser_context<>, parser_tag<_weight_set_weights> >     weight_set_weights;
+    rule<ScannerT, parser_context<>, parser_tag<_weight_set> >     weight_set;
+    rule<ScannerT, parser_context<>, parser_tag<_choose_arg_ids> >     choose_arg_ids;
+    rule<ScannerT, parser_context<>, parser_tag<_choose_arg> >     choose_arg;
+    rule<ScannerT, parser_context<>, parser_tag<_choose_args> >     choose_args;
 
     rule<ScannerT, parser_context<>, parser_tag<_crushmap> >      crushmap;
 
@@ -106,28 +118,29 @@ struct crush_grammar : public grammar<crush_grammar>
       tunable = str_p("tunable") >> name >> posint;
 
       // devices
-      device = str_p("device") >> posint >> name;
+      device = str_p("device") >> posint >> name >> !( str_p("class") >> name );
 
       // bucket types
       bucket_type = str_p("type") >> posint >> name;
 
       // buckets
-      bucket_id = str_p("id") >> negint;
+      bucket_id = str_p("id") >> negint >> !( str_p("class") >> name );
       bucket_alg = str_p("alg") >> name;
       bucket_hash = str_p("hash") >> ( integer |
 				       str_p("rjenkins1") );
       bucket_item = str_p("item") >> name
 				  >> !( str_p("weight") >> real_p )
 				  >> !( str_p("pos") >> posint );
-      bucket = name >> name >> '{' >> !bucket_id >> bucket_alg >> *bucket_hash >> *bucket_item >> '}';
+      bucket = name >> name >> '{' >> *bucket_id >> bucket_alg >> *bucket_hash >> *bucket_item >> '}';
 
       // rules
-      step_take = str_p("take") >> name;
+      step_take = str_p("take") >> name >> !( str_p("class") >> name );
       step_set_choose_tries = str_p("set_choose_tries") >> posint;
       step_set_choose_local_tries = str_p("set_choose_local_tries") >> posint;
       step_set_choose_local_fallback_tries = str_p("set_choose_local_fallback_tries") >> posint;
       step_set_chooseleaf_tries = str_p("set_chooseleaf_tries") >> posint;
       step_set_chooseleaf_vary_r = str_p("set_chooseleaf_vary_r") >> posint;
+      step_set_chooseleaf_stable = str_p("set_chooseleaf_stable") >> posint;
       step_choose = str_p("choose")
 	>> ( str_p("indep") | str_p("firstn") )
 	>> integer
@@ -143,19 +156,31 @@ struct crush_grammar : public grammar<crush_grammar>
 				step_set_choose_local_fallback_tries |
 				step_set_chooseleaf_tries |
 				step_set_chooseleaf_vary_r |
+				step_set_chooseleaf_stable |
 				step_choose |
 				step_chooseleaf |
 				step_emit );
       crushrule = str_p("rule") >> !name >> '{'
-			   >> str_p("ruleset") >> posint
+				>> (str_p("id") | str_p("ruleset")) >> posint
 			   >> str_p("type") >> ( str_p("replicated") | str_p("erasure") )
 			   >> str_p("min_size") >> posint
 			   >> str_p("max_size") >> posint
 			   >> +step
 			   >> '}';
 
+      weight_set_weights = str_p("[") >> *real_p >> str_p("]");
+      weight_set = str_p("weight_set") >> str_p("[")
+				       >> *weight_set_weights
+				       >> str_p("]");
+      choose_arg_ids = str_p("ids") >> str_p("[") >> *integer >> str_p("]");
+      choose_arg = str_p("{") >> str_p("bucket_id") >> negint
+			      >> !weight_set
+			      >> !choose_arg_ids
+			      >> str_p("}");
+      choose_args = str_p("choose_args") >> posint >> str_p("{") >> *choose_arg >> str_p("}");
+
       // the whole crush map
-      crushmap = *(tunable | device | bucket_type) >> *(bucket | crushrule);
+      crushmap = *(tunable | device | bucket_type) >> *(bucket | crushrule) >> *choose_args;
     }
 
     rule<ScannerT, parser_context<>, parser_tag<_crushmap> > const&

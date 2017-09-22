@@ -5,6 +5,9 @@
 
 #include "include/rados/librados.h"
 #include "include/rados/librados.hpp"
+#include "include/encoding.h"
+#include "include/err.h"
+#include "include/scope_guard.h"
 #include "test/librados/test.h"
 #include "test/librados/TestCase.h"
 
@@ -32,11 +35,13 @@ TEST_F(LibRadosIo, TooBig) {
   ASSERT_EQ(-E2BIG, rados_write(ioctx, "A", buf, UINT_MAX, 0));
   ASSERT_EQ(-E2BIG, rados_append(ioctx, "A", buf, UINT_MAX));
   ASSERT_EQ(-E2BIG, rados_write_full(ioctx, "A", buf, UINT_MAX));
+  ASSERT_EQ(-E2BIG, rados_writesame(ioctx, "A", buf, sizeof(buf), UINT_MAX, 0));
   IoCtx ioctx;
   bufferlist bl;
   ASSERT_EQ(-E2BIG, ioctx.write("foo", bl, UINT_MAX, 0));
   ASSERT_EQ(-E2BIG, ioctx.append("foo", bl, UINT_MAX));
   // ioctx.write_full no way to overflow bl.length()
+  ASSERT_EQ(-E2BIG, ioctx.writesame("foo", bl, UINT_MAX, 0));
 }
 
 TEST_F(LibRadosIo, ReadTimeout) {
@@ -48,12 +53,12 @@ TEST_F(LibRadosIo, ReadTimeout) {
     // set up a second client
     rados_t cluster;
     rados_ioctx_t ioctx;
-    rados_create(&cluster, "admin");
-    rados_conf_read_file(cluster, NULL);
-    rados_conf_parse_env(cluster, NULL);
-    rados_conf_set(cluster, "rados_osd_op_timeout", "0.00001"); // use any small value that will result in a timeout
-    rados_connect(cluster);
-    rados_ioctx_create(cluster, pool_name.c_str(), &ioctx);
+    ASSERT_EQ(0, rados_create(&cluster, "admin"));
+    ASSERT_EQ(0, rados_conf_read_file(cluster, NULL));
+    ASSERT_EQ(0, rados_conf_parse_env(cluster, NULL));
+    ASSERT_EQ(0, rados_conf_set(cluster, "rados_osd_op_timeout", "0.00001")); // use any small value that will result in a timeout
+    ASSERT_EQ(0, rados_connect(cluster));
+    ASSERT_EQ(0, rados_ioctx_create(cluster, pool_name.c_str(), &ioctx));
     rados_ioctx_set_namespace(ioctx, nspace.c_str());
 
     // then we show that the buffer is changed after rados_read returned
@@ -112,6 +117,15 @@ TEST_F(LibRadosIoPP, ReadOpPP) {
       bufferlist op_bl;
       ObjectReadOperation op;
       op.read(0, sizeof(buf), NULL, NULL);
+      ASSERT_EQ(0, ioctx.operate("foo", &op, &op_bl));
+      ASSERT_EQ(sizeof(buf), op_bl.length());
+      ASSERT_EQ(0, memcmp(op_bl.c_str(), buf, sizeof(buf)));
+  }
+
+  {
+      bufferlist op_bl;
+      ObjectReadOperation op;
+      op.read(0, 0, NULL, NULL); //len=0 mean read the whole object data.
       ASSERT_EQ(0, ioctx.operate("foo", &op, &op_bl));
       ASSERT_EQ(sizeof(buf), op_bl.length());
       ASSERT_EQ(0, memcmp(op_bl.c_str(), buf, sizeof(buf)));
@@ -223,6 +237,25 @@ TEST_F(LibRadosIoPP, ReadOpPP) {
   }
 }
 
+TEST_F(LibRadosIoPP, SparseReadOpPP) {
+  char buf[128];
+  memset(buf, 0xcc, sizeof(buf));
+  bufferlist bl;
+  bl.append(buf, sizeof(buf));
+  ASSERT_EQ(0, ioctx.write("foo", bl, sizeof(buf), 0));
+
+  {
+    std::map<uint64_t, uint64_t> extents;
+    bufferlist read_bl;
+    int rval = -1;
+    ObjectReadOperation op;
+    op.sparse_read(0, sizeof(buf), &extents, &read_bl, &rval);
+    ASSERT_EQ(0, ioctx.operate("foo", &op, nullptr));
+    ASSERT_EQ(0, rval);
+    assert_eq_sparse(bl, extents, read_bl);
+  }
+}
+
 TEST_F(LibRadosIo, RoundTrip) {
   char buf[128];
   char buf2[128];
@@ -266,6 +299,44 @@ TEST_F(LibRadosIoPP, RoundTripPP2)
   read.set_op_flags2(LIBRADOS_OP_FLAG_FADVISE_NOCACHE|LIBRADOS_OP_FLAG_FADVISE_RANDOM);
   ASSERT_EQ(0, ioctx.operate("foo", &read, &bl));
   ASSERT_EQ(0, memcmp(bl.c_str(), "ceph", 4));
+}
+
+TEST_F(LibRadosIo, Checksum) {
+  char buf[128];
+  memset(buf, 0xcc, sizeof(buf));
+  ASSERT_EQ(0, rados_write(ioctx, "foo", buf, sizeof(buf), 0));
+
+  uint32_t expected_crc = ceph_crc32c(-1, reinterpret_cast<const uint8_t*>(buf),
+                                      sizeof(buf));
+  uint32_t init_value = -1;
+  uint32_t crc[2];
+  ASSERT_EQ(0, rados_checksum(ioctx, "foo", LIBRADOS_CHECKSUM_TYPE_CRC32C,
+			      reinterpret_cast<char*>(&init_value),
+			      sizeof(init_value), sizeof(buf), 0, 0,
+			      reinterpret_cast<char*>(&crc), sizeof(crc)));
+  ASSERT_EQ(1U, crc[0]);
+  ASSERT_EQ(expected_crc, crc[1]);
+}
+
+TEST_F(LibRadosIoPP, Checksum) {
+  char buf[128];
+  Rados cluster;
+  memset(buf, 0xcc, sizeof(buf));
+  bufferlist bl;
+  bl.append(buf, sizeof(buf));
+  ASSERT_EQ(0, ioctx.write("foo", bl, sizeof(buf), 0));
+  bufferlist init_value_bl;
+  ::encode(static_cast<uint32_t>(-1), init_value_bl);
+  bufferlist csum_bl;
+  ASSERT_EQ(0, ioctx.checksum("foo", LIBRADOS_CHECKSUM_TYPE_CRC32C,
+			      init_value_bl, sizeof(buf), 0, 0, &csum_bl));
+  auto csum_bl_it = csum_bl.begin();
+  uint32_t csum_count;
+  ::decode(csum_count, csum_bl_it);
+  ASSERT_EQ(1U, csum_count);
+  uint32_t csum;
+  ::decode(csum, csum_bl_it);
+  ASSERT_EQ(bl.crc32c(-1), csum);
 }
 
 TEST_F(LibRadosIo, OverlappingWriteRoundTrip) {
@@ -463,6 +534,17 @@ TEST_F(LibRadosIo, RmXattr) {
       rados_setxattr(ioctx, "foo", attr1, attr1_buf, sizeof(attr1_buf)));
   ASSERT_EQ(0, rados_rmxattr(ioctx, "foo", attr1));
   ASSERT_EQ(-ENODATA, rados_getxattr(ioctx, "foo", attr1, buf, sizeof(buf)));
+
+  // Test rmxattr on a removed object
+  char buf2[128];
+  char attr2[] = "attr2";
+  char attr2_buf[] = "foo bar baz";
+  memset(buf2, 0xbb, sizeof(buf2));
+  ASSERT_EQ(0, rados_write(ioctx, "foo_rmxattr", buf2, sizeof(buf2), 0));
+  ASSERT_EQ(0,
+      rados_setxattr(ioctx, "foo_rmxattr", attr2, attr2_buf, sizeof(attr2_buf)));
+  ASSERT_EQ(0, rados_remove(ioctx, "foo_rmxattr"));
+  ASSERT_EQ(-ENOENT, rados_rmxattr(ioctx, "foo_rmxattr", attr2));
 }
 
 TEST_F(LibRadosIoPP, RmXattrPP) {
@@ -479,6 +561,20 @@ TEST_F(LibRadosIoPP, RmXattrPP) {
   ASSERT_EQ(0, ioctx.rmxattr("foo", attr1));
   bufferlist bl3;
   ASSERT_EQ(-ENODATA, ioctx.getxattr("foo", attr1, bl3));
+
+  // Test rmxattr on a removed object
+  char buf2[128];
+  char attr2[] = "attr2";
+  char attr2_buf[] = "foo bar baz";
+  memset(buf2, 0xbb, sizeof(buf2));
+  bufferlist bl21;
+  bl21.append(buf, sizeof(buf));
+  ASSERT_EQ(0, ioctx.write("foo_rmxattr", bl21, sizeof(buf2), 0));
+  bufferlist bl22;
+  bl22.append(attr2_buf, sizeof(attr2_buf));
+  ASSERT_EQ(0, ioctx.setxattr("foo_rmxattr", attr2, bl22));
+  ASSERT_EQ(0, ioctx.remove("foo_rmxattr"));
+  ASSERT_EQ(-ENOENT, ioctx.rmxattr("foo_rmxattr", attr2));
 }
 
 TEST_F(LibRadosIo, XattrIter) {
@@ -506,11 +602,11 @@ TEST_F(LibRadosIo, XattrIter) {
       break;
     }
     ASSERT_LT(num_seen, 2);
-    if ((strcmp(name, attr1) == 0) && (memcmp(val, attr1_buf, len) == 0)) {
+    if ((strcmp(name, attr1) == 0) && (val != NULL) && (memcmp(val, attr1_buf, len) == 0)) {
       num_seen++;
       continue;
     }
-    else if ((strcmp(name, attr2) == 0) && (memcmp(val, attr2_buf, len) == 0)) {
+    else if ((strcmp(name, attr2) == 0) && (val != NULL) && (memcmp(val, attr2_buf, len) == 0)) {
       num_seen++;
       continue;
     }
@@ -588,6 +684,15 @@ TEST_F(LibRadosIoECPP, ReadOpPP) {
       ASSERT_EQ(0, ioctx.operate("foo", &op, &op_bl));
       ASSERT_EQ(sizeof(buf), op_bl.length());
       ASSERT_EQ(0, memcmp(op_bl.c_str(), buf, sizeof(buf)));
+  }
+
+  {
+    bufferlist op_bl;
+    ObjectReadOperation op;
+    op.read(0, 0, NULL, NULL); //len=0 mean read the whole object data
+    ASSERT_EQ(0, ioctx.operate("foo", &op, &op_bl));
+    ASSERT_EQ(sizeof(buf), op_bl.length());
+    ASSERT_EQ(0, memcmp(op_bl.c_str(), buf, sizeof(buf)));
   }
 
   {
@@ -696,6 +801,25 @@ TEST_F(LibRadosIoECPP, ReadOpPP) {
   }
 }
 
+TEST_F(LibRadosIoECPP, SparseReadOpPP) {
+  char buf[128];
+  memset(buf, 0xcc, sizeof(buf));
+  bufferlist bl;
+  bl.append(buf, sizeof(buf));
+  ASSERT_EQ(0, ioctx.write("foo", bl, sizeof(buf), 0));
+
+  {
+    std::map<uint64_t, uint64_t> extents;
+    bufferlist read_bl;
+    int rval = -1;
+    ObjectReadOperation op;
+    op.sparse_read(0, sizeof(buf), &extents, &read_bl, &rval);
+    ASSERT_EQ(0, ioctx.operate("foo", &op, nullptr));
+    ASSERT_EQ(0, rval);
+    assert_eq_sparse(bl, extents, read_bl);
+  }
+}
+
 TEST_F(LibRadosIoEC, RoundTrip) {
   char buf[128];
   char buf2[128];
@@ -743,6 +867,12 @@ TEST_F(LibRadosIoEC, OverlappingWriteRoundTrip) {
   char *buf = (char *)new char[dbsize];
   char *buf2 = (char *)new char[bsize];
   char *buf3 = (char *)new char[dbsize];
+  auto cleanup = [&] {
+    delete[] buf;
+    delete[] buf2;
+    delete[] buf3;
+  };
+  scope_guard<decltype(cleanup)> sg(std::move(cleanup));
   memset(buf, 0xcc, dbsize);
   ASSERT_EQ(0, rados_write(ioctx, "foo", buf, dbsize, 0));
   memset(buf2, 0xdd, bsize);
@@ -751,10 +881,6 @@ TEST_F(LibRadosIoEC, OverlappingWriteRoundTrip) {
   ASSERT_EQ(dbsize, rados_read(ioctx, "foo", buf3, dbsize, 0));
   // Read the same as first write
   ASSERT_EQ(0, memcmp(buf3, buf, dbsize));
-
-  delete[] buf;
-  delete[] buf2;
-  delete[] buf3;
 }
 
 TEST_F(LibRadosIoECPP, OverlappingWriteRoundTripPP) {
@@ -762,6 +888,11 @@ TEST_F(LibRadosIoECPP, OverlappingWriteRoundTripPP) {
   int dbsize = bsize * 2;
   char *buf = (char *)new char[dbsize];
   char *buf2 = (char *)new char[bsize];
+  auto cleanup = [&] {
+    delete[] buf;
+    delete[] buf2;
+  };
+  scope_guard<decltype(cleanup)> sg(std::move(cleanup));
   memset(buf, 0xcc, dbsize);
   bufferlist bl1;
   bl1.append(buf, dbsize);
@@ -774,9 +905,6 @@ TEST_F(LibRadosIoECPP, OverlappingWriteRoundTripPP) {
   ASSERT_EQ(dbsize, ioctx.read("foo", bl3, dbsize, 0));
   // Read the same as first write
   ASSERT_EQ(0, memcmp(bl3.c_str(), buf, dbsize));
-
-  delete[] buf;
-  delete[] buf2;
 }
 
 TEST_F(LibRadosIoEC, WriteFullRoundTrip) {
@@ -828,6 +956,15 @@ TEST_F(LibRadosIoEC, AppendRoundTrip) {
   char *buf = (char *)new char[alignment];
   char *buf2 = (char *)new char[alignment];
   char *buf3 = (char *)new char[alignment *2];
+  int uasize = alignment/2;
+  char *unalignedbuf = (char *)new char[uasize];
+  auto cleanup = [&] {
+    delete[] buf;
+    delete[] buf2;
+    delete[] buf3;
+    delete[] unalignedbuf;
+  };
+  scope_guard<decltype(cleanup)> sg(std::move(cleanup));
   memset(buf, 0xde, alignment);
   ASSERT_EQ(0, rados_append(ioctx, "foo", buf, alignment));
   memset(buf2, 0xad, alignment);
@@ -836,21 +973,19 @@ TEST_F(LibRadosIoEC, AppendRoundTrip) {
   ASSERT_EQ((int)alignment*2, rados_read(ioctx, "foo", buf3, alignment*2, 0));
   ASSERT_EQ(0, memcmp(buf3, buf, alignment));
   ASSERT_EQ(0, memcmp(buf3 + alignment, buf2, alignment));
-
-  int uasize = alignment/2;
-  char *unalignedbuf = (char *)new char[uasize];
+  memset(unalignedbuf, 0, uasize);
   ASSERT_EQ(0, rados_append(ioctx, "foo", unalignedbuf, uasize));
   ASSERT_EQ(-EOPNOTSUPP, rados_append(ioctx, "foo", unalignedbuf, uasize));
-
-  delete[] buf;
-  delete[] buf2;
-  delete[] buf3;
-  delete[] unalignedbuf;
 }
 
 TEST_F(LibRadosIoECPP, AppendRoundTripPP) {
   char *buf = (char *)new char[alignment];
   char *buf2 = (char *)new char[alignment];
+  auto cleanup = [&] {
+    delete[] buf;
+    delete[] buf2;
+  };
+  scope_guard<decltype(cleanup)> sg(std::move(cleanup));
   memset(buf, 0xde, alignment);
   bufferlist bl1;
   bl1.append(buf, alignment);
@@ -865,9 +1000,6 @@ TEST_F(LibRadosIoECPP, AppendRoundTripPP) {
   const char *bl3_str = bl3.c_str();
   ASSERT_EQ(0, memcmp(bl3_str, buf, alignment));
   ASSERT_EQ(0, memcmp(bl3_str + alignment, buf2, alignment));
-
-  delete[] buf;
-  delete[] buf2;
 }
 
 TEST_F(LibRadosIoEC, TruncTest) {
@@ -960,6 +1092,17 @@ TEST_F(LibRadosIoEC, RmXattr) {
       rados_setxattr(ioctx, "foo", attr1, attr1_buf, sizeof(attr1_buf)));
   ASSERT_EQ(0, rados_rmxattr(ioctx, "foo", attr1));
   ASSERT_EQ(-ENODATA, rados_getxattr(ioctx, "foo", attr1, buf, sizeof(buf)));
+
+  // Test rmxattr on a removed object
+  char buf2[128];
+  char attr2[] = "attr2";
+  char attr2_buf[] = "foo bar baz";
+  memset(buf2, 0xbb, sizeof(buf2));
+  ASSERT_EQ(0, rados_write(ioctx, "foo_rmxattr", buf2, sizeof(buf2), 0));
+  ASSERT_EQ(0,
+      rados_setxattr(ioctx, "foo_rmxattr", attr2, attr2_buf, sizeof(attr2_buf)));
+  ASSERT_EQ(0, rados_remove(ioctx, "foo_rmxattr"));
+  ASSERT_EQ(-ENOENT, rados_rmxattr(ioctx, "foo_rmxattr", attr2));
 }
 
 TEST_F(LibRadosIoECPP, RmXattrPP) {
@@ -976,6 +1119,20 @@ TEST_F(LibRadosIoECPP, RmXattrPP) {
   ASSERT_EQ(0, ioctx.rmxattr("foo", attr1));
   bufferlist bl3;
   ASSERT_EQ(-ENODATA, ioctx.getxattr("foo", attr1, bl3));
+
+  // Test rmxattr on a removed object
+  char buf2[128];
+  char attr2[] = "attr2";
+  char attr2_buf[] = "foo bar baz";
+  memset(buf2, 0xbb, sizeof(buf2));
+  bufferlist bl21;
+  bl21.append(buf, sizeof(buf));
+  ASSERT_EQ(0, ioctx.write("foo_rmxattr", bl21, sizeof(buf2), 0));
+  bufferlist bl22;
+  bl22.append(attr2_buf, sizeof(attr2_buf));
+  ASSERT_EQ(0, ioctx.setxattr("foo_rmxattr", attr2, bl22));
+  ASSERT_EQ(0, ioctx.remove("foo_rmxattr"));
+  ASSERT_EQ(-ENOENT, ioctx.rmxattr("foo_rmxattr", attr2));
 }
 
 TEST_F(LibRadosIoEC, XattrIter) {
@@ -1003,11 +1160,11 @@ TEST_F(LibRadosIoEC, XattrIter) {
       break;
     }
     ASSERT_LT(num_seen, 2);
-    if ((strcmp(name, attr1) == 0) && (memcmp(val, attr1_buf, len) == 0)) {
+    if ((strcmp(name, attr1) == 0) && (val != NULL) && (memcmp(val, attr1_buf, len) == 0)) {
       num_seen++;
       continue;
     }
-    else if ((strcmp(name, attr2) == 0) && (memcmp(val, attr2_buf, len) == 0)) {
+    else if ((strcmp(name, attr2) == 0) && (val != NULL) && (memcmp(val, attr2_buf, len) == 0)) {
       num_seen++;
       continue;
     }
@@ -1051,4 +1208,118 @@ TEST_F(LibRadosIoECPP, XattrListPP) {
       ASSERT_EQ(0, 1);
     }
   }
+}
+
+TEST_F(LibRadosIoPP, CmpExtPP) {
+  bufferlist bl;
+  bl.append("ceph");
+  ObjectWriteOperation write1;
+  write1.write(0, bl);
+  ASSERT_EQ(0, ioctx.operate("foo", &write1));
+
+  bufferlist new_bl;
+  new_bl.append("CEPH");
+  ObjectWriteOperation write2;
+  write2.cmpext(0, bl, nullptr);
+  write2.write(0, new_bl);
+  ASSERT_EQ(0, ioctx.operate("foo", &write2));
+
+  ObjectReadOperation read;
+  read.read(0, bl.length(), NULL, NULL);
+  ASSERT_EQ(0, ioctx.operate("foo", &read, &bl));
+  ASSERT_EQ(0, memcmp(bl.c_str(), "CEPH", 4));
+}
+
+TEST_F(LibRadosIoPP, CmpExtDNEPP) {
+  bufferlist bl;
+  bl.append(std::string(4, '\0'));
+
+  bufferlist new_bl;
+  new_bl.append("CEPH");
+  ObjectWriteOperation write;
+  write.cmpext(0, bl, nullptr);
+  write.write(0, new_bl);
+  ASSERT_EQ(0, ioctx.operate("foo", &write));
+
+  ObjectReadOperation read;
+  read.read(0, bl.length(), NULL, NULL);
+  ASSERT_EQ(0, ioctx.operate("foo", &read, &bl));
+  ASSERT_EQ(0, memcmp(bl.c_str(), "CEPH", 4));
+}
+
+TEST_F(LibRadosIoPP, CmpExtMismatchPP) {
+  bufferlist bl;
+  bl.append("ceph");
+  ObjectWriteOperation write1;
+  write1.write(0, bl);
+  ASSERT_EQ(0, ioctx.operate("foo", &write1));
+
+  bufferlist new_bl;
+  new_bl.append("CEPH");
+  ObjectWriteOperation write2;
+  write2.cmpext(0, new_bl, nullptr);
+  write2.write(0, new_bl);
+  ASSERT_EQ(-MAX_ERRNO, ioctx.operate("foo", &write2));
+
+  ObjectReadOperation read;
+  read.read(0, bl.length(), NULL, NULL);
+  ASSERT_EQ(0, ioctx.operate("foo", &read, &bl));
+  ASSERT_EQ(0, memcmp(bl.c_str(), "ceph", 4));
+}
+
+TEST_F(LibRadosIoECPP, CmpExtPP) {
+  bufferlist bl;
+  bl.append("ceph");
+  ObjectWriteOperation write1;
+  write1.write(0, bl);
+  ASSERT_EQ(0, ioctx.operate("foo", &write1));
+
+  bufferlist new_bl;
+  new_bl.append("CEPH");
+  ObjectWriteOperation write2;
+  write2.cmpext(0, bl, nullptr);
+  write2.write_full(new_bl);
+  ASSERT_EQ(0, ioctx.operate("foo", &write2));
+
+  ObjectReadOperation read;
+  read.read(0, bl.length(), NULL, NULL);
+  ASSERT_EQ(0, ioctx.operate("foo", &read, &bl));
+  ASSERT_EQ(0, memcmp(bl.c_str(), "CEPH", 4));
+}
+
+TEST_F(LibRadosIoECPP, CmpExtDNEPP) {
+  bufferlist bl;
+  bl.append(std::string(4, '\0'));
+
+  bufferlist new_bl;
+  new_bl.append("CEPH");
+  ObjectWriteOperation write;
+  write.cmpext(0, bl, nullptr);
+  write.write_full(new_bl);
+  ASSERT_EQ(0, ioctx.operate("foo", &write));
+
+  ObjectReadOperation read;
+  read.read(0, bl.length(), NULL, NULL);
+  ASSERT_EQ(0, ioctx.operate("foo", &read, &bl));
+  ASSERT_EQ(0, memcmp(bl.c_str(), "CEPH", 4));
+}
+
+TEST_F(LibRadosIoECPP, CmpExtMismatchPP) {
+  bufferlist bl;
+  bl.append("ceph");
+  ObjectWriteOperation write1;
+  write1.write(0, bl);
+  ASSERT_EQ(0, ioctx.operate("foo", &write1));
+
+  bufferlist new_bl;
+  new_bl.append("CEPH");
+  ObjectWriteOperation write2;
+  write2.cmpext(0, new_bl, nullptr);
+  write2.write_full(new_bl);
+  ASSERT_EQ(-MAX_ERRNO, ioctx.operate("foo", &write2));
+
+  ObjectReadOperation read;
+  read.read(0, bl.length(), NULL, NULL);
+  ASSERT_EQ(0, ioctx.operate("foo", &read, &bl));
+  ASSERT_EQ(0, memcmp(bl.c_str(), "ceph", 4));
 }

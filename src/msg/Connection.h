@@ -39,12 +39,12 @@ class Message;
 class Messenger;
 
 struct Connection : public RefCountedObject {
-  Mutex lock;
+  mutable Mutex lock;
   Messenger *msgr;
   RefCountedObject *priv;
   int peer_type;
   entity_addr_t peer_addr;
-  utime_t last_keepalive_ack;
+  utime_t last_keepalive, last_keepalive_ack;
 private:
   uint64_t features;
 public:
@@ -70,7 +70,7 @@ public:
       rx_buffers_version(0) {
   }
 
-  virtual ~Connection() {
+  ~Connection() override {
     //generic_dout(0) << "~Connection " << this << dendl;
     if (priv) {
       //generic_dout(0) << "~Connection " << this << " dropping priv " << priv << dendl;
@@ -155,6 +155,7 @@ public:
   void set_peer_type(int t) { peer_type = t; }
 
   bool peer_is_mon() const { return peer_type == CEPH_ENTITY_TYPE_MON; }
+  bool peer_is_mgr() const { return peer_type == CEPH_ENTITY_TYPE_MGR; }
   bool peer_is_mds() const { return peer_type == CEPH_ENTITY_TYPE_MDS; }
   bool peer_is_osd() const { return peer_type == CEPH_ENTITY_TYPE_OSD; }
   bool peer_is_client() const { return peer_type == CEPH_ENTITY_TYPE_CLIENT; }
@@ -164,6 +165,9 @@ public:
 
   uint64_t get_features() const { return features; }
   bool has_feature(uint64_t f) const { return features & f; }
+  bool has_features(uint64_t f) const {
+    return (features & f) == f;
+  }
   void set_features(uint64_t f) { features = f; }
   void set_feature(uint64_t f) { features |= f; }
 
@@ -178,9 +182,23 @@ public:
     rx_buffers.erase(tid);
   }
 
+  utime_t get_last_keepalive() const {
+    Mutex::Locker l(lock);
+    return last_keepalive;
+  }
+  void set_last_keepalive(utime_t t) {
+    Mutex::Locker l(lock);
+    last_keepalive = t;
+  }
   utime_t get_last_keepalive_ack() const {
+    Mutex::Locker l(lock);
     return last_keepalive_ack;
   }
+  void set_last_keepalive_ack(utime_t t) {
+    Mutex::Locker l(lock);
+    last_keepalive_ack = t;
+  }
+
 };
 
 typedef boost::intrusive_ptr<Connection> ConnectionRef;

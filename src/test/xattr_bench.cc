@@ -17,7 +17,7 @@
 #include <string.h>
 #include <iostream>
 #include <sstream>
-#include "os/FileStore.h"
+#include "os/filestore/FileStore.h"
 #include "include/Context.h"
 #include "common/ceph_argparse.h"
 #include "global/global_init.h"
@@ -66,7 +66,7 @@ public:
     (*in_progress)++;
   }
 
-  void finish(int r) {
+  void finish(int r) override {
     Mutex::Locker l(*lock);
     (*in_progress)--;
     cond->Signal();
@@ -90,23 +90,23 @@ uint64_t do_run(ObjectStore *store, int attrsize, int numattrs,
   Mutex lock("lock");
   Cond cond;
   int in_flight = 0;
+  ObjectStore::Sequencer osr(__func__);
   ObjectStore::Transaction t;
-  map<string, pair<set<string>, ObjectStore::Sequencer*> > collections;
+  map<coll_t, pair<set<string>, ObjectStore::Sequencer*> > collections;
   for (int i = 0; i < 3*THREADS; ++i) {
-    stringstream coll_str;
-    coll_str << "coll_" << i << "_" << run;
-    t.create_collection(coll_t(coll_str.str()));
+    coll_t coll(spg_t(pg_t(0, i + 1000*run), shard_id_t::NO_SHARD));
+    t.create_collection(coll, 0);
     set<string> objects;
     for (int i = 0; i < transsize; ++i) {
       stringstream obj_str;
       obj_str << i;
-      t.touch(coll_t(coll_str.str()),
-	      hobject_t(sobject_t(obj_str.str(), CEPH_NOSNAP)));
+      t.touch(coll,
+	      ghobject_t(hobject_t(sobject_t(obj_str.str(), CEPH_NOSNAP))));
       objects.insert(obj_str.str());
     }
-    collections[coll_str.str()] = make_pair(objects, new ObjectStore::Sequencer(coll_str.str()));
+    collections[coll] = make_pair(objects, new ObjectStore::Sequencer(coll.to_str()));
   }
-  store->apply_transaction(t);
+  store->apply_transaction(&osr, std::move(t));
 
   bufferlist bl;
   for (int i = 0; i < attrsize; ++i) {
@@ -121,7 +121,7 @@ uint64_t do_run(ObjectStore *store, int attrsize, int numattrs,
 	cond.Wait(lock);
     }
     ObjectStore::Transaction *t = new ObjectStore::Transaction;
-    map<string, pair<set<string>, ObjectStore::Sequencer*> >::iterator iter =
+    map<coll_t, pair<set<string>, ObjectStore::Sequencer*> >::iterator iter =
       rand_choose(collections);
     for (set<string>::iterator obj = iter->second.first.begin();
 	 obj != iter->second.first.end();
@@ -129,15 +129,16 @@ uint64_t do_run(ObjectStore *store, int attrsize, int numattrs,
       for (int j = 0; j < numattrs; ++j) {
 	stringstream ss;
 	ss << i << ", " << j << ", " << *obj;
-	t->setattr(coll_t(iter->first),
-		   hobject_t(sobject_t(*obj, CEPH_NOSNAP)),
+	t->setattr(iter->first,
+		   ghobject_t(hobject_t(sobject_t(*obj, CEPH_NOSNAP))),
 		   ss.str().c_str(),
 		   bl);
       }
     }
-    store->queue_transaction(iter->second.second, t,
+    store->queue_transaction(iter->second.second, std::move(*t),
 			     new OnApplied(&lock, &cond, &in_flight,
 					   t));
+    delete t;
   }
   {
     Mutex::Locker l(lock);
@@ -151,16 +152,9 @@ int main(int argc, char **argv) {
   vector<const char*> args;
   argv_to_vec(argc, (const char **)argv, args);
 
-  global_init(0, args, CEPH_ENTITY_TYPE_CLIENT, CODE_ENVIRONMENT_UTILITY, 0);
+  auto cct = global_init(0, args, CEPH_ENTITY_TYPE_CLIENT,
+			 CODE_ENVIRONMENT_UTILITY, 0);
   common_init_finish(g_ceph_context);
-  if (args[0] == string("omap")) {
-    std::cerr << "using omap xattrs" << std::endl;
-    g_ceph_context->_conf->set_val("filestore_xattr_use_omap", "true");
-  } else {
-    std::cerr << "not using omap xattrs" << std::endl;
-    g_ceph_context->_conf->set_val("filestore_xattr_use_omap", "false");
-  }
-  g_ceph_context->_conf->apply_changes(NULL);
 
   std::cerr << "args: " << args << std::endl;
   if (args.size() < 3) {
@@ -171,7 +165,8 @@ int main(int argc, char **argv) {
   string store_path(args[1]);
   string store_dev(args[2]);
 
-  boost::scoped_ptr<ObjectStore> store(new FileStore(store_path, store_dev));
+  boost::scoped_ptr<ObjectStore> store(new FileStore(cct.get(), store_path,
+						     store_dev));
 
   std::cerr << "mkfs starting" << std::endl;
   assert(!store->mkfs());

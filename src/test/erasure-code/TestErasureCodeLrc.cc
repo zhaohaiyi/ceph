@@ -16,79 +16,79 @@
  */
 
 #include <errno.h>
+#include <stdlib.h>
 
 #include "crush/CrushWrapper.h"
-#include "common/config.h"
 #include "include/stringify.h"
-#include "global/global_init.h"
 #include "erasure-code/lrc/ErasureCodeLrc.h"
-#include "common/ceph_argparse.h"
 #include "global/global_context.h"
+#include "common/config.h"
 #include "gtest/gtest.h"
 
-TEST(ErasureCodeLrc, parse_ruleset)
+
+TEST(ErasureCodeLrc, parse_rule)
 {
-  ErasureCodeLrc lrc;
-  EXPECT_EQ("default", lrc.ruleset_root);
-  EXPECT_EQ("host", lrc.ruleset_steps.front().type);
+  ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
+  EXPECT_EQ("default", lrc.rule_root);
+  EXPECT_EQ("host", lrc.rule_steps.front().type);
 
   ErasureCodeProfile profile;
-  profile["ruleset-root"] = "other";
-  EXPECT_EQ(0, lrc.parse_ruleset(profile, &cerr));
-  EXPECT_EQ("other", lrc.ruleset_root);
+  profile["crush-root"] = "other";
+  EXPECT_EQ(0, lrc.parse_rule(profile, &cerr));
+  EXPECT_EQ("other", lrc.rule_root);
 
-  profile["ruleset-steps"] = "[]";
-  EXPECT_EQ(0, lrc.parse_ruleset(profile, &cerr));
-  EXPECT_TRUE(lrc.ruleset_steps.empty());
+  profile["crush-steps"] = "[]";
+  EXPECT_EQ(0, lrc.parse_rule(profile, &cerr));
+  EXPECT_TRUE(lrc.rule_steps.empty());
 
-  profile["ruleset-steps"] = "0";
-  EXPECT_EQ(ERROR_LRC_ARRAY, lrc.parse_ruleset(profile, &cerr));
+  profile["crush-steps"] = "0";
+  EXPECT_EQ(ERROR_LRC_ARRAY, lrc.parse_rule(profile, &cerr));
 
-  profile["ruleset-steps"] = "{";
-  EXPECT_EQ(ERROR_LRC_PARSE_JSON, lrc.parse_ruleset(profile, &cerr));
+  profile["crush-steps"] = "{";
+  EXPECT_EQ(ERROR_LRC_PARSE_JSON, lrc.parse_rule(profile, &cerr));
 
-  profile["ruleset-steps"] = "[0]";
-  EXPECT_EQ(ERROR_LRC_ARRAY, lrc.parse_ruleset(profile, &cerr));
+  profile["crush-steps"] = "[0]";
+  EXPECT_EQ(ERROR_LRC_ARRAY, lrc.parse_rule(profile, &cerr));
 
-  profile["ruleset-steps"] = "[[0]]";
-  EXPECT_EQ(ERROR_LRC_RULESET_OP, lrc.parse_ruleset(profile, &cerr));
+  profile["crush-steps"] = "[[0]]";
+  EXPECT_EQ(ERROR_LRC_RULE_OP, lrc.parse_rule(profile, &cerr));
 
-  profile["ruleset-steps"] = "[[\"choose\", 0]]";
-  EXPECT_EQ(ERROR_LRC_RULESET_TYPE, lrc.parse_ruleset(profile, &cerr));
+  profile["crush-steps"] = "[[\"choose\", 0]]";
+  EXPECT_EQ(ERROR_LRC_RULE_TYPE, lrc.parse_rule(profile, &cerr));
 
-  profile["ruleset-steps"] = "[[\"choose\", \"host\", []]]";
-  EXPECT_EQ(ERROR_LRC_RULESET_N, lrc.parse_ruleset(profile, &cerr));
+  profile["crush-steps"] = "[[\"choose\", \"host\", []]]";
+  EXPECT_EQ(ERROR_LRC_RULE_N, lrc.parse_rule(profile, &cerr));
 
-  profile["ruleset-steps"] = "[[\"choose\", \"host\", 2]]";
-  EXPECT_EQ(0, lrc.parse_ruleset(profile, &cerr));
+  profile["crush-steps"] = "[[\"choose\", \"host\", 2]]";
+  EXPECT_EQ(0, lrc.parse_rule(profile, &cerr));
 
-  const ErasureCodeLrc::Step &step = lrc.ruleset_steps.front();
+  const ErasureCodeLrc::Step &step = lrc.rule_steps.front();
   EXPECT_EQ("choose", step.op);
   EXPECT_EQ("host", step.type);
   EXPECT_EQ(2, step.n);
 
-  profile["ruleset-steps"] =
+  profile["crush-steps"] =
     "["
     " [\"choose\", \"rack\", 2], "
     " [\"chooseleaf\", \"host\", 5], "
     "]";
-  EXPECT_EQ(0, lrc.parse_ruleset(profile, &cerr));
-  EXPECT_EQ(2U, lrc.ruleset_steps.size());
+  EXPECT_EQ(0, lrc.parse_rule(profile, &cerr));
+  EXPECT_EQ(2U, lrc.rule_steps.size());
   {
-    const ErasureCodeLrc::Step &step = lrc.ruleset_steps[0];
+    const ErasureCodeLrc::Step &step = lrc.rule_steps[0];
     EXPECT_EQ("choose", step.op);
     EXPECT_EQ("rack", step.type);
     EXPECT_EQ(2, step.n);
   }
   {
-    const ErasureCodeLrc::Step &step = lrc.ruleset_steps[1];
+    const ErasureCodeLrc::Step &step = lrc.rule_steps[1];
     EXPECT_EQ("chooseleaf", step.op);
     EXPECT_EQ("host", step.type);
     EXPECT_EQ(5, step.n);
   }
 }
 
-TEST(ErasureCodeTest, create_ruleset)
+TEST(ErasureCodeTest, create_rule)
 {
   CrushWrapper *c = new CrushWrapper;
   c->create();
@@ -128,20 +128,22 @@ TEST(ErasureCodeTest, create_ruleset)
     }
   }
 
-  ErasureCodeLrc lrc;
-  EXPECT_EQ(0, lrc.create_ruleset("rule1", *c, &cerr));
+  c->finalize();
+
+  ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
+  EXPECT_EQ(0, lrc.create_rule("rule1", *c, &cerr));
 
   ErasureCodeProfile profile;
   unsigned int racks = 2;
   unsigned int hosts = 5;
-  profile["ruleset-steps"] =
+  profile["crush-steps"] =
     "["
     " [\"choose\", \"rack\", " + stringify(racks) + "], "
     " [\"chooseleaf\", \"host\", " + stringify(hosts) + "], "
     "]";
   const char *rule_name = "rule2";
-  EXPECT_EQ(0, lrc.parse_ruleset(profile, &cerr));
-  EXPECT_EQ(1, lrc.create_ruleset(rule_name, *c, &cerr));
+  EXPECT_EQ(0, lrc.parse_rule(profile, &cerr));
+  EXPECT_EQ(1, lrc.create_rule(rule_name, *c, &cerr));
 
   vector<__u32> weight;
   for (int o = 0; o < c->get_max_devices(); o++)
@@ -149,7 +151,7 @@ TEST(ErasureCodeTest, create_ruleset)
   int rule = c->get_rule_id(rule_name);
   vector<int> out;
   unsigned int n = racks * hosts;
-  c->do_rule(rule, 1, out, n, weight);
+  c->do_rule(rule, 1, out, n, weight, 0);
   EXPECT_EQ(n, out.size());
   //
   // check that the first five are in the same rack and the next five
@@ -169,14 +171,14 @@ TEST(ErasureCodeTest, create_ruleset)
 
 TEST(ErasureCodeLrc, parse_kml)
 {
-  ErasureCodeLrc lrc;
+  ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
   ErasureCodeProfile profile;
   EXPECT_EQ(0, lrc.parse_kml(profile, &cerr));
   profile["k"] = "4";
   EXPECT_EQ(ERROR_LRC_ALL_OR_NOTHING, lrc.parse_kml(profile, &cerr));
   const char *generated[] = { "mapping",
 			      "layers",
-			      "ruleset-steps" };
+			      "crush-steps" };
   profile["m"] = "2";
   profile["l"] = "3";
 
@@ -206,45 +208,45 @@ TEST(ErasureCodeLrc, parse_kml)
 	    " [ \"____DDDc\", \"\" ],"
 	    "]", profile["layers"]);
   EXPECT_EQ("DD__DD__", profile["mapping"]);
-  EXPECT_EQ("chooseleaf", lrc.ruleset_steps[0].op);
-  EXPECT_EQ("host", lrc.ruleset_steps[0].type);
-  EXPECT_EQ(0, lrc.ruleset_steps[0].n);
-  EXPECT_EQ(1U, lrc.ruleset_steps.size());
+  EXPECT_EQ("chooseleaf", lrc.rule_steps[0].op);
+  EXPECT_EQ("host", lrc.rule_steps[0].type);
+  EXPECT_EQ(0, lrc.rule_steps[0].n);
+  EXPECT_EQ(1U, lrc.rule_steps.size());
   profile.erase(profile.find("mapping"));
   profile.erase(profile.find("layers"));
 
   profile["k"] = "4";
   profile["m"] = "2";
   profile["l"] = "3";
-  profile["ruleset-failure-domain"] = "osd";
+  profile["crush-failure-domain"] = "osd";
   EXPECT_EQ(0, lrc.parse_kml(profile, &cerr));
-  EXPECT_EQ("chooseleaf", lrc.ruleset_steps[0].op);
-  EXPECT_EQ("osd", lrc.ruleset_steps[0].type);
-  EXPECT_EQ(0, lrc.ruleset_steps[0].n);
-  EXPECT_EQ(1U, lrc.ruleset_steps.size());
+  EXPECT_EQ("chooseleaf", lrc.rule_steps[0].op);
+  EXPECT_EQ("osd", lrc.rule_steps[0].type);
+  EXPECT_EQ(0, lrc.rule_steps[0].n);
+  EXPECT_EQ(1U, lrc.rule_steps.size());
   profile.erase(profile.find("mapping"));
   profile.erase(profile.find("layers"));
 
   profile["k"] = "4";
   profile["m"] = "2";
   profile["l"] = "3";
-  profile["ruleset-failure-domain"] = "osd";
-  profile["ruleset-locality"] = "rack";
+  profile["crush-failure-domain"] = "osd";
+  profile["crush-locality"] = "rack";
   EXPECT_EQ(0, lrc.parse_kml(profile, &cerr));
-  EXPECT_EQ("choose", lrc.ruleset_steps[0].op);
-  EXPECT_EQ("rack", lrc.ruleset_steps[0].type);
-  EXPECT_EQ(2, lrc.ruleset_steps[0].n);
-  EXPECT_EQ("chooseleaf", lrc.ruleset_steps[1].op);
-  EXPECT_EQ("osd", lrc.ruleset_steps[1].type);
-  EXPECT_EQ(4, lrc.ruleset_steps[1].n);
-  EXPECT_EQ(2U, lrc.ruleset_steps.size());
+  EXPECT_EQ("choose", lrc.rule_steps[0].op);
+  EXPECT_EQ("rack", lrc.rule_steps[0].type);
+  EXPECT_EQ(2, lrc.rule_steps[0].n);
+  EXPECT_EQ("chooseleaf", lrc.rule_steps[1].op);
+  EXPECT_EQ("osd", lrc.rule_steps[1].type);
+  EXPECT_EQ(4, lrc.rule_steps[1].n);
+  EXPECT_EQ(2U, lrc.rule_steps.size());
   profile.erase(profile.find("mapping"));
   profile.erase(profile.find("layers"));
 }
 
 TEST(ErasureCodeLrc, layers_description)
 {
-  ErasureCodeLrc lrc;
+  ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
   ErasureCodeProfile profile;
 
   json_spirit::mArray description;
@@ -273,7 +275,7 @@ TEST(ErasureCodeLrc, layers_description)
 TEST(ErasureCodeLrc, layers_parse)
 {
   {
-    ErasureCodeLrc lrc;
+    ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
     ErasureCodeProfile profile;
 
     const char *description_string ="[ 0 ]";
@@ -285,7 +287,7 @@ TEST(ErasureCodeLrc, layers_parse)
   }
 
   {
-    ErasureCodeLrc lrc;
+    ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
     ErasureCodeProfile profile;
 
     const char *description_string ="[ [ 0 ] ]";
@@ -297,7 +299,7 @@ TEST(ErasureCodeLrc, layers_parse)
   }
 
   {
-    ErasureCodeLrc lrc;
+    ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
     ErasureCodeProfile profile;
 
     const char *description_string ="[ [ \"\", 0 ] ]";
@@ -313,7 +315,7 @@ TEST(ErasureCodeLrc, layers_parse)
   // profile.
   //
   {
-    ErasureCodeLrc lrc;
+    ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
     ErasureCodeProfile profile;
 
     const char *description_string ="[ [ \"\", { \"a\": \"b\" }, \"ignored\" ] ]";
@@ -329,7 +331,7 @@ TEST(ErasureCodeLrc, layers_parse)
   // profile.
   //
   {
-    ErasureCodeLrc lrc;
+    ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
     ErasureCodeProfile profile;
 
     const char *description_string ="[ [ \"\", \"a=b c=d\" ] ]";
@@ -346,11 +348,10 @@ TEST(ErasureCodeLrc, layers_parse)
 TEST(ErasureCodeLrc, layers_sanity_checks)
 {
   {
-    ErasureCodeLrc lrc;
+    ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
     ErasureCodeProfile profile;
     profile["mapping"] =
 	    "__DDD__DD";
-    profile["directory"] = ".libs";
     const char *description_string =
       "[ "
       "  [ \"_cDDD_cDD\", \"\" ],"
@@ -361,7 +362,7 @@ TEST(ErasureCodeLrc, layers_sanity_checks)
     EXPECT_EQ(0, lrc.init(profile, &cerr));
   }
   {
-    ErasureCodeLrc lrc;
+    ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
     ErasureCodeProfile profile;
     const char *description_string =
       "[ "
@@ -370,7 +371,7 @@ TEST(ErasureCodeLrc, layers_sanity_checks)
     EXPECT_EQ(ERROR_LRC_MAPPING, lrc.init(profile, &cerr));
   }
   {
-    ErasureCodeLrc lrc;
+    ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
     ErasureCodeProfile profile;
     profile["mapping"] = "";
     const char *description_string =
@@ -380,9 +381,8 @@ TEST(ErasureCodeLrc, layers_sanity_checks)
     EXPECT_EQ(ERROR_LRC_LAYERS_COUNT, lrc.init(profile, &cerr));
   }
   {
-    ErasureCodeLrc lrc;
+    ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
     ErasureCodeProfile profile;
-    profile["directory"] = ".libs";
     profile["mapping"] =
 	    "DD";
     const char *description_string =
@@ -399,15 +399,16 @@ TEST(ErasureCodeLrc, layers_sanity_checks)
 TEST(ErasureCodeLrc, layers_init)
 {
   {
-    ErasureCodeLrc lrc;
+    ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
     ErasureCodeProfile profile;
 
-    const char *description_string =
-      "[ "
-      "  [ \"_cDDD_cDD_\", \"directory=.libs\" ],"
+    const char* env = getenv("CEPH_LIB");
+    string directory(env ? env : ".libs");
+    string description_string = 
+      "[ " 
+      "  [ \"_cDDD_cDD_\", \"directory=" + directory + "\" ]," 
       "]";
     profile["layers"] = description_string;
-    profile["directory"] = ".libs";
     json_spirit::mArray description;
     EXPECT_EQ(0, lrc.layers_description(profile, &description, &cerr));
     EXPECT_EQ(0, lrc.layers_parse(description_string, description, &cerr));
@@ -421,7 +422,7 @@ TEST(ErasureCodeLrc, layers_init)
 
 TEST(ErasureCodeLrc, init)
 {
-  ErasureCodeLrc lrc;
+  ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
   ErasureCodeProfile profile;
   profile["mapping"] =
     "__DDD__DD";
@@ -432,18 +433,16 @@ TEST(ErasureCodeLrc, init)
     "  [ \"_____cDDD\", \"\" ],"
     "]";
   profile["layers"] = description_string;
-  profile["directory"] = ".libs";
   EXPECT_EQ(0, lrc.init(profile, &cerr));
 }
 
 TEST(ErasureCodeLrc, init_kml)
 {
-  ErasureCodeLrc lrc;
+  ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
   ErasureCodeProfile profile;
   profile["k"] = "4";
   profile["m"] = "2";
   profile["l"] = "3";
-  profile["directory"] = ".libs";
   EXPECT_EQ(0, lrc.init(profile, &cerr));
   EXPECT_EQ((unsigned int)(4 + 2 + (4 + 2) / 3), lrc.get_chunk_count());
 }
@@ -452,7 +451,7 @@ TEST(ErasureCodeLrc, minimum_to_decode)
 {
   // trivial : no erasures, the minimum is want_to_read
   {
-    ErasureCodeLrc lrc;
+    ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
     ErasureCodeProfile profile;
     profile["mapping"] =
       "__DDD__DD";
@@ -463,7 +462,6 @@ TEST(ErasureCodeLrc, minimum_to_decode)
       "  [ \"_____cDDD\", \"\" ],"
       "]";
     profile["layers"] = description_string;
-    profile["directory"] = ".libs";
     EXPECT_EQ(0, lrc.init(profile, &cerr));
     set<int> want_to_read;
     want_to_read.insert(1);
@@ -476,7 +474,7 @@ TEST(ErasureCodeLrc, minimum_to_decode)
   }
   // locally repairable erasure
   {
-    ErasureCodeLrc lrc;
+    ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
     ErasureCodeProfile profile;
     profile["mapping"] =
 	    "__DDD__DD_";
@@ -488,7 +486,6 @@ TEST(ErasureCodeLrc, minimum_to_decode)
       "  [ \"_____DDDDc\", \"\" ],"
       "]";
     profile["layers"] = description_string;
-    profile["directory"] = ".libs";
     EXPECT_EQ(0, lrc.init(profile, &cerr));
     EXPECT_EQ(profile["mapping"].length(),
 	      lrc.get_chunk_count());
@@ -527,7 +524,7 @@ TEST(ErasureCodeLrc, minimum_to_decode)
   }
   // implicit parity required
   {
-    ErasureCodeLrc lrc;
+    ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
     ErasureCodeProfile profile;
     profile["mapping"] =
 	    "__DDD__DD";
@@ -538,7 +535,6 @@ TEST(ErasureCodeLrc, minimum_to_decode)
       "  [ \"_____cDDD\", \"\" ],"
       "]";
     profile["layers"] = description_string;
-    profile["directory"] = ".libs";
     EXPECT_EQ(0, lrc.init(profile, &cerr));
     EXPECT_EQ(profile["mapping"].length(),
 	      lrc.get_chunk_count());
@@ -606,7 +602,7 @@ TEST(ErasureCodeLrc, minimum_to_decode)
 
 TEST(ErasureCodeLrc, encode_decode)
 {
-  ErasureCodeLrc lrc;
+  ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
   ErasureCodeProfile profile;
   profile["mapping"] =
     "__DD__DD";
@@ -617,11 +613,10 @@ TEST(ErasureCodeLrc, encode_decode)
     "  [ \"____cDDD\", \"\" ]," // second local layer
     "]";
   profile["layers"] = description_string;
-  profile["directory"] = ".libs";
   EXPECT_EQ(0, lrc.init(profile, &cerr));
   EXPECT_EQ(4U, lrc.get_data_chunk_count());
-  unsigned int stripe_width = g_conf->osd_pool_erasure_code_stripe_width;
-  unsigned int chunk_size = stripe_width / lrc.get_data_chunk_count();
+  unsigned int chunk_size = g_conf->osd_pool_erasure_code_stripe_unit;
+  unsigned int stripe_width = lrc.get_data_chunk_count() * chunk_size;
   EXPECT_EQ(chunk_size, lrc.get_chunk_size(stripe_width));
   set<int> want_to_encode;
   map<int, bufferlist> encoded;
@@ -737,7 +732,7 @@ TEST(ErasureCodeLrc, encode_decode)
 
 TEST(ErasureCodeLrc, encode_decode_2)
 {
-  ErasureCodeLrc lrc;
+  ErasureCodeLrc lrc(g_conf->get_val<std::string>("erasure_code_dir"));
   ErasureCodeProfile profile;
   profile["mapping"] =
     "DD__DD__";
@@ -748,11 +743,10 @@ TEST(ErasureCodeLrc, encode_decode_2)
     " [ \"____DDDc\", \"\" ],"
     "]";
   profile["layers"] = description_string;
-  profile["directory"] = ".libs";
   EXPECT_EQ(0, lrc.init(profile, &cerr));
   EXPECT_EQ(4U, lrc.get_data_chunk_count());
-  unsigned int stripe_width = g_conf->osd_pool_erasure_code_stripe_width;
-  unsigned int chunk_size = stripe_width / lrc.get_data_chunk_count();
+  unsigned int chunk_size = g_conf->osd_pool_erasure_code_stripe_unit;
+  unsigned int stripe_width = lrc.get_data_chunk_count() * chunk_size;
   EXPECT_EQ(chunk_size, lrc.get_chunk_size(stripe_width));
   set<int> want_to_encode;
   map<int, bufferlist> encoded;
@@ -912,18 +906,6 @@ TEST(ErasureCodeLrc, encode_decode_2)
     map<int, bufferlist> decoded;
     EXPECT_EQ(0, lrc.decode(want_to_read, chunks, &decoded));
   }
-}
-
-int main(int argc, char **argv)
-{
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
-
-  global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT, CODE_ENVIRONMENT_UTILITY, 0);
-  common_init_finish(g_ceph_context);
-
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
 }
 
 /*

@@ -15,38 +15,58 @@
 #ifndef CEPH_FINISHER_H
 #define CEPH_FINISHER_H
 
-#include "include/atomic.h"
 #include "common/Mutex.h"
 #include "common/Cond.h"
-#include "common/Thread.h"
 #include "common/perf_counters.h"
 
 class CephContext;
 
+/// Finisher queue length performance counter ID.
 enum {
   l_finisher_first = 997082,
   l_finisher_queue_len,
+  l_finisher_complete_lat,
   l_finisher_last
 };
 
+/** @brief Asynchronous cleanup class.
+ * Finisher asynchronously completes Contexts, which are simple classes
+ * representing callbacks, in a dedicated worker thread. Enqueuing
+ * contexts to complete is thread-safe.
+ */
 class Finisher {
   CephContext *cct;
-  Mutex          finisher_lock;
-  Cond           finisher_cond, finisher_empty_cond;
-  bool           finisher_stop, finisher_running;
+  Mutex        finisher_lock; ///< Protects access to queues and finisher_running.
+  Cond         finisher_cond; ///< Signaled when there is something to process.
+  Cond         finisher_empty_cond; ///< Signaled when the finisher has nothing more to process.
+  bool         finisher_stop; ///< Set when the finisher should stop.
+  bool         finisher_running; ///< True when the finisher is currently executing contexts.
+  bool	       finisher_empty_wait; ///< True mean someone wait finisher empty.
+  /// Queue for contexts for which complete(0) will be called.
+  /// NULLs in this queue indicate that an item from finisher_queue_rval
+  /// should be completed in that place instead.
   vector<Context*> finisher_queue;
+
+  string thread_name;
+
+  /// Queue for contexts for which the complete function will be called
+  /// with a parameter other than 0.
   list<pair<Context*,int> > finisher_queue_rval;
+
+  /// Performance counter for the finisher's queue length.
+  /// Only active for named finishers.
   PerfCounters *logger;
   
   void *finisher_thread_entry();
 
   struct FinisherThread : public Thread {
     Finisher *fin;    
-    FinisherThread(Finisher *f) : fin(f) {}
-    void* entry() { return (void*)fin->finisher_thread_entry(); }
+    explicit FinisherThread(Finisher *f) : fin(f) {}
+    void* entry() override { return (void*)fin->finisher_thread_entry(); }
   } finisher_thread;
 
  public:
+  /// Add a context to complete, optionally specifying a parameter for the complete function.
   void queue(Context *c, int r = 0) {
     finisher_lock.Lock();
     if (finisher_queue.empty()) {
@@ -94,28 +114,45 @@ class Finisher {
     finisher_lock.Unlock();
     ls.clear();
   }
-  
+
+  /// Start the worker thread.
   void start();
+
+  /** @brief Stop the worker thread.
+   *
+   * Does not wait until all outstanding contexts are completed.
+   * To ensure that everything finishes, you should first shut down
+   * all sources that can add contexts to this finisher and call
+   * wait_for_empty() before calling stop(). */
   void stop();
 
+  /** @brief Blocks until the finisher has nothing left to process.
+   * This function will also return when a concurrent call to stop()
+   * finishes, but this class should never be used in this way. */
   void wait_for_empty();
 
-  Finisher(CephContext *cct_) :
+  /// Construct an anonymous Finisher.
+  /// Anonymous finishers do not log their queue length.
+  explicit Finisher(CephContext *cct_) :
     cct(cct_), finisher_lock("Finisher::finisher_lock"),
-    finisher_stop(false), finisher_running(false),
-    logger(0),
+    finisher_stop(false), finisher_running(false), finisher_empty_wait(false),
+    thread_name("fn_anonymous"), logger(0),
     finisher_thread(this) {}
-  Finisher(CephContext *cct_, string name) :
-    cct(cct_), finisher_lock("Finisher::finisher_lock"),
-    finisher_stop(false), finisher_running(false),
-    logger(0),
+
+  /// Construct a named Finisher that logs its queue length.
+  Finisher(CephContext *cct_, string name, string tn) :
+    cct(cct_), finisher_lock("Finisher::" + name),
+    finisher_stop(false), finisher_running(false), finisher_empty_wait(false),
+    thread_name(tn), logger(0),
     finisher_thread(this) {
     PerfCountersBuilder b(cct, string("finisher-") + name,
 			  l_finisher_first, l_finisher_last);
     b.add_u64(l_finisher_queue_len, "queue_len");
+    b.add_time_avg(l_finisher_complete_lat, "complete_latency");
     logger = b.create_perf_counters();
     cct->get_perfcounters_collection()->add(logger);
     logger->set(l_finisher_queue_len, 0);
+    logger->set(l_finisher_complete_lat, 0);
   }
 
   ~Finisher() {
@@ -126,6 +163,7 @@ class Finisher {
   }
 };
 
+/// Context that is completed asynchronously on the supplied finisher.
 class C_OnFinisher : public Context {
   Context *con;
   Finisher *fin;
@@ -134,8 +172,17 @@ public:
     assert(fin != NULL);
     assert(con != NULL);
   }
-  void finish(int r) {
+
+  ~C_OnFinisher() override {
+    if (con != nullptr) {
+      delete con;
+      con = nullptr;
+    }
+  }
+
+  void finish(int r) override {
     fin->queue(con, r);
+    con = nullptr;
   }
 };
 

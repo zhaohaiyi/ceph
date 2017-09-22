@@ -18,10 +18,12 @@ calculated automatically. Here are a few values commonly used:
 
 - Between 5 and 10 OSDs set ``pg_num`` to 512
 
-- Between 10 and 50 OSDs set ``pg_num`` to 4096
+- Between 10 and 50 OSDs set ``pg_num`` to 1024
 
 - If you have more than 50 OSDs, you need to understand the tradeoffs
   and how to calculate the ``pg_num`` value by yourself
+
+- For calculating ``pg_num`` value by yourself please take help of `pgcalc`_ tool
 
 As the number of OSDs increases, chosing the right value for pg_num
 becomes more important because it has a significant influence on the
@@ -58,11 +60,10 @@ cannot realistically track placement on a per-object basis.
                   |                       |
                   +-----------------------+
 
-Placement groups are invisible to the Ceph user: the CRUSH algorithm
-determines in which placement group the object will be
-placed. Although CRUSH is a deterministic function using the object
-name as a parameter, there is no way to force an object into a given
-placement group.
+The Ceph client will calculate which placement group an object should
+be in. It does this by hashing the object ID and applying an operation
+based on the number of PGs in the defined pool and the ID of the pool.
+See `Mapping PGs to OSDs`_ for details.
 
 The object's contents within a placement group are stored in a set of
 OSDs. For instance, in a replicated pool of size two, each placement
@@ -190,7 +191,7 @@ will degrade ~4 (i.e. ~75 / 19 placement groups being recovered)
 instead of ~17 and the third OSD lost will only lose data if it is one
 of the four OSDs containing the surviving copy. In other words, if the
 probability of losing one OSD is 0.0001% during the recovery time
-frame, it goes from 17 * 10 * 0.0001% in the cluster with 10 OSDs to 4 * 20 * 
+frame, it goes from 17 * 10 * 0.0001% in the cluster with 10 OSDs to 4 * 20 *
 0.0001% in the cluster with 20 OSDs.
 
 In a nutshell, more OSDs mean faster recovery and a lower risk of
@@ -249,6 +250,8 @@ they exist.
 Minimizing the number of placement groups saves significant amounts of
 resources.
 
+.. _choosing-number-of-placement-groups:
+
 Choosing the number of Placement Groups
 =======================================
 
@@ -295,6 +298,9 @@ resources. However, if 1,000 pools were created with 512 placement
 groups each, the OSDs will handle ~50,000 placement groups each and it
 would require significantly more resources and time for peering.
 
+You may find the `PGCalc`_ tool helpful.
+
+
 .. _setting the number of placement groups:
 
 Set the Number of Placement Groups
@@ -302,7 +308,7 @@ Set the Number of Placement Groups
 
 To set the number of placement groups in a pool, you must specify the
 number of placement groups at the time you create the pool.
-See `Create a Pool`_ for details. Once you've set placement groups for a
+See `Create a Pool`_ for details. Once you have set placement groups for a
 pool, you may increase the number of placement groups (but you cannot
 decrease the number of placement groups). To increase the number of
 placement groups, execute the following::
@@ -310,10 +316,14 @@ placement groups, execute the following::
         ceph osd pool set {pool-name} pg_num {pg_num}
 
 Once you increase the number of placement groups, you must also
-increase the number of placement groups for placement (``pgp_num``) before your
-cluster will rebalance. The ``pgp_num`` should be equal to the ``pg_num``.
-To increase the number of placement groups for placement, execute the
-following::
+increase the number of placement groups for placement (``pgp_num``)
+before your cluster will rebalance. The ``pgp_num`` will be the number of
+placement groups that will be considered for placement by the CRUSH
+algorithm. Increasing ``pg_num`` splits the placement groups but data
+will not be migrated to the newer placement groups until placement
+groups for placement, ie. ``pgp_num`` is increased. The ``pgp_num``
+should be equal to the ``pg_num``.  To increase the number of
+placement groups for placement, execute the following::
 
         ceph osd pool set {pool-name} pgp_num {pgp_num}
 
@@ -395,6 +405,36 @@ or mismatched, and their contents are consistent.  Assuming the replicas all
 match, a final semantic sweep ensures that all of the snapshot-related object
 metadata is consistent. Errors are reported via logs.
 
+Prioritize backfill/recovery of a Placement Group(s)
+====================================================
+
+You may run into a situation where a bunch of placement groups will require
+recovery and/or backfill, and some particular groups hold data more important
+than others (for example, those PGs may hold data for images used by running
+machines and other PGs may be used by inactive machines/less relevant data).
+In that case, you may want to prioritize recovery of those groups so
+performance and/or availability of data stored on those groups is restored
+earlier. To do this (mark particular placement group(s) as prioritized during
+backfill or recovery), execute the following::
+
+        ceph pg force-recovery {pg-id} [{pg-id #2}] [{pg-id #3} ...]
+        ceph pg force-backfill {pg-id} [{pg-id #2}] [{pg-id #3} ...]
+
+This will cause Ceph to perform recovery or backfill on specified placement
+groups first, before other placement groups. This does not interrupt currently
+ongoing backfills or recovery, but causes specified PGs to be processed
+as soon as possible. If you change your mind or prioritize wrong groups,
+use::
+
+        ceph pg cancel-force-recovery {pg-id} [{pg-id #2}] [{pg-id #3} ...]
+        ceph pg cancel-force-backfill {pg-id} [{pg-id #2}] [{pg-id #3} ...]
+
+This will remove "force" flag from those PGs and they will be processed
+in default order. Again, this doesn't affect currently processed placement
+group, only those that are still queued.
+
+The "force" flag is cleared automatically after recovery or backfill of group
+is done.
 
 Revert Lost
 ===========
@@ -427,3 +467,5 @@ entirely. To mark the "unfound" objects as "lost", execute the following::
 
 
 .. _Create a Pool: ../pools#createpool
+.. _Mapping PGs to OSDs: ../../../architecture#mapping-pgs-to-osds
+.. _pgcalc: http://ceph.com/pgcalc/

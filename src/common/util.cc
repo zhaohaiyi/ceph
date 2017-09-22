@@ -12,38 +12,31 @@
  * 
  */
 
-#include <errno.h>
 #include <sys/utsname.h>
 #include <boost/lexical_cast.hpp>
 
+#include "include/compat.h"
 #include "include/util.h"
 #include "common/debug.h"
 #include "common/errno.h"
-#include "common/strtol.h"
+#include "common/version.h"
 
 #ifdef HAVE_SYS_VFS_H
 #include <sys/vfs.h>
 #endif
 
-// test if an entire buf is zero in 8-byte chunks
-bool buf_is_zero(const char *buf, size_t len)
-{
-  size_t ofs;
-  int chunk = sizeof(uint64_t);
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#include <sys/param.h>
+#include <sys/mount.h>
+#if defined(__APPLE__)
+#include <sys/types.h>
+#include <sys/sysctl.h>
+#endif
+#endif
 
-  for (ofs = 0; ofs < len; ofs += sizeof(uint64_t)) {
-    if (*(uint64_t *)(buf + ofs) != 0) {
-      return false;
-    }
-  }
-  for (ofs = (len / chunk) * chunk; ofs < len; ofs++) {
-    if (buf[ofs] != '\0') {
-      return false;
-    }
-  }
-  return true;
-}
+#include <string>
 
+#include <stdio.h>
 
 int64_t unit_to_bytesize(string val, ostream *pss)
 {
@@ -130,52 +123,80 @@ int get_fs_stats(ceph_data_stats_t &stats, const char *path)
   return 0;
 }
 
-static bool lsb_release_set(char *buf, const char *prefix,
+static char* value_sanitize(char *value)
+{
+  while (isspace(*value) || *value == '"')
+    value++;
+
+  char* end = value + strlen(value) - 1;
+  while (end > value && (isspace(*end) || *end == '"'))
+    end--;
+
+  *(end + 1) = '\0';
+
+  return value;
+}
+
+static bool value_set(char *buf, const char *prefix,
 			    map<string, string> *pm, const char *key)
 {
   if (strncmp(buf, prefix, strlen(prefix))) {
     return false;
   }
 
-  if (buf[strlen(buf)-1] == '\n')
-    buf[strlen(buf)-1] = '\0';
-
-  char *value = buf + strlen(prefix) + 1;
-  (*pm)[key] = value;
+  (*pm)[key] = value_sanitize(buf + strlen(prefix));
   return true;
 }
 
-static void lsb_release_parse(map<string, string> *m, CephContext *cct)
-{
-  FILE *fp = popen("lsb_release -idrc", "r");
-  if (!fp) {
-    int ret = -errno;
-    lderr(cct) << "lsb_release_parse - failed to call lsb_release binary with error: " << cpp_strerror(ret) << dendl;
-    return;
-  }
-
+static void file_values_parse(const map<string, string>& kvm, FILE *fp, map<string, string> *m, CephContext *cct) {
   char buf[512];
   while (fgets(buf, sizeof(buf) - 1, fp) != NULL) {
-    if (lsb_release_set(buf, "Distributor ID:", m, "distro"))
-      continue;
-    if (lsb_release_set(buf, "Description:", m, "distro_description"))
-      continue;
-    if (lsb_release_set(buf, "Release:", m, "distro_version"))
-      continue;
-    if (lsb_release_set(buf, "Codename:", m, "distro_codename"))
-      continue;
+    for (auto& kv : kvm) {
+      if (value_set(buf, kv.second.c_str(), m, kv.first.c_str()))
+        continue;
+    }
+  }
+}
 
-    lderr(cct) << "unhandled output: " << buf << dendl;
+static bool os_release_parse(map<string, string> *m, CephContext *cct)
+{
+  static const map<string, string> kvm = {
+    { "distro", "ID=" },
+    { "distro_description", "PRETTY_NAME=" },
+    { "distro_version", "VERSION_ID=" }
+  };
+
+  FILE *fp = fopen("/etc/os-release", "r");
+  if (!fp) {
+    int ret = -errno;
+    lderr(cct) << "os_release_parse - failed to open /etc/os-release: " << cpp_strerror(ret) << dendl;
+    return false;
   }
 
-  if (pclose(fp)) {
-    int ret = -errno;
-    lderr(cct) << "lsb_release_parse - pclose failed: " << cpp_strerror(ret) << dendl;
+  file_values_parse(kvm, fp, m, cct);
+
+  fclose(fp);
+
+  return true;
+}
+
+static void distro_detect(map<string, string> *m, CephContext *cct)
+{
+  if (!os_release_parse(m, cct)) {
+    lderr(cct) << "distro_detect - /etc/os-release is required" << dendl;
+  }
+
+  for (const char* rk: {"distro", "distro_description"}) {
+    if (m->find(rk) == m->end())
+      lderr(cct) << "distro_detect - can't detect " << rk << dendl;
   }
 }
 
 void collect_sys_info(map<string, string> *m, CephContext *cct)
 {
+  // version
+  (*m)["ceph_version"] = pretty_version_to_str();
+
   // kernel info
   struct utsname u;
   int r = uname(&u);
@@ -186,9 +207,37 @@ void collect_sys_info(map<string, string> *m, CephContext *cct)
     (*m)["hostname"] = u.nodename;
     (*m)["arch"] = u.machine;
   }
-
+#ifdef __APPLE__
   // memory
-  FILE *f = fopen("/proc/meminfo", "r");
+  {
+    uint64_t size;
+    size_t len = sizeof(size);
+    r = sysctlbyname("hw.memsize", &size, &len, NULL, 0);
+    if (r == 0) {
+      (*m)["mem_total_kb"] = std::to_string(size);
+    }
+  }
+  {
+    xsw_usage vmusage;
+    size_t len = sizeof(vmusage);
+    r = sysctlbyname("vm.swapusage", &vmusage, &len, NULL, 0);
+    if (r == 0) {
+      (*m)["mem_swap_kb"] = std::to_string(vmusage.xsu_total);
+    }
+  }
+  // processor
+  {
+    char buf[100];
+    size_t len = sizeof(buf);
+    r = sysctlbyname("machdep.cpu.brand_string", buf, &len, NULL, 0);
+    if (r == 0) {
+      buf[len - 1] = '\0';
+      (*m)["cpu"] = buf;
+    }
+  }
+#else
+  // memory
+  FILE *f = fopen(PROCPREFIX "/proc/meminfo", "r");
   if (f) {
     char buf[100];
     while (!feof(f)) {
@@ -209,7 +258,7 @@ void collect_sys_info(map<string, string> *m, CephContext *cct)
   }
 
   // processor
-  f = fopen("/proc/cpuinfo", "r");
+  f = fopen(PROCPREFIX "/proc/cpuinfo", "r");
   if (f) {
     char buf[100];
     while (!feof(f)) {
@@ -231,9 +280,9 @@ void collect_sys_info(map<string, string> *m, CephContext *cct)
     }
     fclose(f);
   }
-
+#endif
   // distro info
-  lsb_release_parse(m, cct);
+  distro_detect(m, cct);
 }
 
 void dump_services(Formatter* f, const map<string, list<int> >& services, const char* type)
@@ -252,4 +301,52 @@ void dump_services(Formatter* f, const map<string, list<int> >& services, const 
     f->close_section();
   }
   f->close_section();
+}
+
+
+// If non-printable characters found then convert bufferlist to
+// base64 encoded string indicating whether it did.
+string cleanbin(bufferlist &bl, bool &base64)
+{
+  bufferlist::iterator it;
+  for (it = bl.begin(); it != bl.end(); ++it) {
+    if (iscntrl(*it))
+      break;
+  }
+  if (it == bl.end()) {
+    base64 = false;
+    string result(bl.c_str(), bl.length());
+    return result;
+  }
+
+  bufferlist b64;
+  bl.encode_base64(b64);
+  string encoded(b64.c_str(), b64.length());
+  base64 = true;
+  return encoded;
+}
+
+// If non-printable characters found then convert to "Base64:" followed by
+// base64 encoding
+string cleanbin(string &str)
+{
+  bool base64;
+  bufferlist bl;
+  bl.append(str);
+  string result = cleanbin(bl, base64);
+  if (base64)
+    result = "Base64:" + result;
+  return result;
+}
+
+std::string bytes2str(uint64_t count) {
+  static char s[][2] = {"\0", "k", "M", "G", "T", "P", "E", "\0"};
+  int i = 0;
+  while (count >= 1024 && *s[i+1]) {
+    count >>= 10;
+    i++;
+  }
+  char str[128];
+  snprintf(str, sizeof str, "%" PRIu64 "%sB", count, s[i]);
+  return std::string(str);
 }

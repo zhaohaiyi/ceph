@@ -15,16 +15,12 @@
 
 #include "CephxServiceHandler.h"
 #include "CephxProtocol.h"
-
-#include "../Auth.h"
-
-#include "mon/Monitor.h"
-
+#include "CephxKeyServer.h"
 #include <errno.h>
 #include <sstream>
 
 #include "common/config.h"
-#include "include/assert.h"
+#include "common/debug.h"
 
 #define dout_subsys ceph_subsys_auth
 #undef dout_prefix
@@ -97,7 +93,7 @@ int CephxServiceHandler::handle_request(bufferlist::iterator& indata, bufferlist
       bool should_enc_ticket = false;
 
       EntityAuth eauth;
-      if (key_server->get_auth(entity_name, eauth) < 0) {
+      if (! key_server->get_auth(entity_name, eauth)) {
 	ret = -EPERM;
 	break;
       }
@@ -110,7 +106,7 @@ int CephxServiceHandler::handle_request(bufferlist::iterator& indata, bufferlist
         should_enc_ticket = true;
       }
 
-      info.ticket.init_timestamps(ceph_clock_now(cct), cct->_conf->auth_mon_ticket_ttl);
+      info.ticket.init_timestamps(ceph_clock_now(), cct->_conf->auth_mon_ticket_ttl);
       info.ticket.name = entity_name;
       info.ticket.global_id = global_id;
       info.ticket.auid = eauth.auid;
@@ -139,6 +135,13 @@ int CephxServiceHandler::handle_request(bufferlist::iterator& indata, bufferlist
 
       if (!key_server->get_service_caps(entity_name, CEPH_ENTITY_TYPE_MON, caps)) {
         ldout(cct, 0) << " could not get mon caps for " << entity_name << dendl;
+        ret = -EACCES;
+      } else {
+        char *caps_str = caps.caps.c_str();
+        if (!caps_str || !caps_str[0]) {
+          ldout(cct,0) << "mon caps null for " << entity_name << dendl;
+          ret = -EACCES;
+        }
       }
     }
     break;
@@ -160,18 +163,31 @@ int CephxServiceHandler::handle_request(bufferlist::iterator& indata, bufferlist
 
       ret = 0;
       vector<CephXSessionAuthInfo> info_vec;
-      for (uint32_t service_id = 1; service_id <= ticket_req.keys; service_id <<= 1) {
+      int found_services = 0;
+      int service_err = 0;
+      for (uint32_t service_id = 1; service_id <= ticket_req.keys;
+	   service_id <<= 1) {
         if (ticket_req.keys & service_id) {
-	  ldout(cct, 10) << " adding key for service " << ceph_entity_type_name(service_id) << dendl;
+	  ldout(cct, 10) << " adding key for service "
+			 << ceph_entity_type_name(service_id) << dendl;
           CephXSessionAuthInfo info;
-          int r = key_server->build_session_auth_info(service_id, auth_ticket_info, info);
+          int r = key_server->build_session_auth_info(service_id,
+						      auth_ticket_info, info);
+	  // tolerate missing MGR rotating key for the purposes of upgrades.
           if (r < 0) {
-            ret = r;
-            break;
-          }
+	    ldout(cct, 10) << "   missing key for service "
+			   << ceph_entity_type_name(service_id) << dendl;
+	    service_err = r;
+	    continue;
+	  }
           info.validity += cct->_conf->auth_service_ticket_ttl;
           info_vec.push_back(info);
+	  ++found_services;
         }
+      }
+      if (!found_services && service_err) {
+	ldout(cct, 10) << __func__ << " did not find any service keys" << dendl;
+	ret = service_err;
       }
       CryptoKey no_key;
       build_cephx_response_header(cephx_header.request_type, ret, result_bl);
@@ -183,8 +199,10 @@ int CephxServiceHandler::handle_request(bufferlist::iterator& indata, bufferlist
     {
       ldout(cct, 10) << "handle_request getting rotating secret for " << entity_name << dendl;
       build_cephx_response_header(cephx_header.request_type, 0, result_bl);
-      key_server->get_rotating_encrypted(entity_name, result_bl);
-      ret = 0;
+      if (!key_server->get_rotating_encrypted(entity_name, result_bl)) {
+        ret = -EPERM;
+        break;
+      }
     }
     break;
 

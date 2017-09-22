@@ -12,11 +12,10 @@
  *
  */
 
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if defined(__FreeBSD__)
+#if defined(__FreeBSD__) || defined(_AIX)
 #include <sys/socket.h>
 #include <netinet/in.h>
 #endif
